@@ -5,6 +5,7 @@ using System.Threading;
 using Cysharp.Threading.Tasks;
 using Mirror;
 using ShooterShop.Catalog;
+using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Range;
 using ShooterShop.Storage;
@@ -24,6 +25,8 @@ namespace ShooterShop.Customers
         private readonly IWarehouse _warehouse;
         private readonly IWallet _wallet;
         private readonly IShootingRange _range;
+        private readonly IDayState _day;
+        private readonly IDayStatistics _statistics;
         private readonly IObjectResolver _resolver;
         private readonly List<Customer> _customers = new();
         private readonly Dictionary<Customer, ShootingLane> _lanes = new();
@@ -37,6 +40,8 @@ namespace ShooterShop.Customers
             IWarehouse warehouse,
             IWallet wallet,
             IShootingRange range,
+            IDayState day,
+            IDayStatistics statistics,
             IObjectResolver resolver)
         {
             _config = config;
@@ -46,9 +51,13 @@ namespace ShooterShop.Customers
             _warehouse = warehouse;
             _wallet = wallet;
             _range = range;
+            _day = day;
+            _statistics = statistics;
             _resolver = resolver;
             _slots = new Customer[layout.CounterSlots.Count];
         }
+
+        public int ActiveCount => _customers.Count;
 
         public async UniTask StartAsync(CancellationToken cancellation)
         {
@@ -60,7 +69,7 @@ namespace ShooterShop.Customers
                 var interval = Random.Range(_config.SpawnInterval.x, _config.SpawnInterval.y);
                 await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation);
 
-                if (_customers.Count < _config.MaxCustomers && TryGetFreeSlot(out var slot))
+                if (_day.IsOpen && _customers.Count < _config.MaxCustomers && TryGetFreeSlot(out var slot))
                     Spawn(slot);
             }
         }
@@ -87,6 +96,7 @@ namespace ShooterShop.Customers
                 return false;
 
             _wallet.Add(request.Price);
+            _statistics.RecordSale(request.Price, request.IsRangeVisit);
 
             if (_lanes.TryGetValue(customer, out var lane))
                 SendToLane(customer, lane);
@@ -100,6 +110,17 @@ namespace ShooterShop.Customers
         {
             if (customer.State == CustomerState.Waiting)
                 Leave(customer);
+        }
+
+        public void CloseShop()
+        {
+            for (var i = _customers.Count - 1; i >= 0; i--)
+            {
+                var customer = _customers[i];
+
+                if (customer != null && customer.State is CustomerState.Arriving or CustomerState.Waiting)
+                    Leave(customer);
+            }
         }
 
         private void UpdateCustomer(Customer customer)

@@ -1,5 +1,6 @@
 using ShooterShop.Catalog;
 using ShooterShop.Customers;
+using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Hud;
 using ShooterShop.Input;
@@ -30,8 +31,14 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private RangeConfig _rangeConfig;
 
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private DayConfig _dayConfig;
+
         [BoxGroup("Network"), Required, SceneObjectsOnly]
         [SerializeField] private ShopNetworkState _shopNetworkState;
+
+        [BoxGroup("Network"), Required, SceneObjectsOnly]
+        [SerializeField] private DayNetworkState _dayNetworkState;
 
         [BoxGroup("Purchasing"), Required, SceneObjectsOnly]
         [SerializeField] private PurchaseTerminal _purchaseTerminal;
@@ -51,6 +58,12 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Hud"), Required, SceneObjectsOnly]
         [SerializeField] private MoneyHudView _moneyHudView;
 
+        [BoxGroup("Hud"), Required, SceneObjectsOnly]
+        [SerializeField] private DayHudView _dayHudView;
+
+        [BoxGroup("Hud"), Required, SceneObjectsOnly]
+        [SerializeField] private DaySummaryView _daySummaryView;
+
         protected override void Configure(IContainerBuilder builder)
         {
             builder.RegisterInstance(_economyConfig);
@@ -59,6 +72,10 @@ namespace ShooterShop.Bootstrap
             builder.Register<Wallet>(Lifetime.Singleton).As<IWallet>();
             builder.Register<Warehouse>(Lifetime.Singleton).As<IWarehouse>();
             builder.RegisterComponent(_shopNetworkState).As<IShopState, IShopCommands>();
+
+            builder.RegisterInstance(_dayConfig);
+            builder.RegisterComponent(_dayNetworkState).AsSelf().As<IDayState, IDayStatistics, IDayCommands>();
+            builder.RegisterEntryPoint<DayCycle>();
 
             builder.Register<AkilaPlayerInputLock>(Lifetime.Singleton).AsImplementedInterfaces();
 
@@ -81,6 +98,11 @@ namespace ShooterShop.Bootstrap
 
             builder.RegisterComponent(_moneyHudView);
             builder.RegisterEntryPoint<MoneyHudPresenter>();
+
+            builder.RegisterComponent(_dayHudView);
+            builder.RegisterEntryPoint<DayHudPresenter>();
+            builder.RegisterComponent(_daySummaryView);
+            builder.RegisterEntryPoint<DaySummaryPresenter>();
 
             builder.RegisterEntryPoint<OfflineSessionStarter>();
             builder.RegisterEntryPoint<GameLoadingCloser>();
