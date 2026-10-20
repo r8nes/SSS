@@ -32,7 +32,7 @@ namespace Akila.FPSFramework.UI
 
             FPSFrameworkCore.IsFreezOnPauseActive = freezeOnPaused;
 
-            if (pauseInputAction.triggered)
+            if (pauseInputAction.triggered && (IsPaused || FPSFrameworkCore.IsInputActive))
             {
                 if (IsPaused) Unpause();
                 else Pause();

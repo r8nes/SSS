@@ -51,9 +51,11 @@ The game is always a Mirror session: **solo = host with `NetworkServer.listen = 
 - **`MenuLifetimeScope`** (`Main Menu` scene) runs the MVP menu `MainMenuView` / `MainMenuPresenter`: Solo, Host, Join by IP and a list of LAN servers.
 - **`GameLifetimeScope`** (`Demo` scene) holds configs, `Wallet` / `Warehouse` and `ShopNetworkState`. `OfflineSessionStarter` starts solo when you press Play straight from `Demo`.
 - **Shop state is server-authoritative.** `IWallet` / `IWarehouse` are the server-side model and only the host changes them. Gameplay and UI on every peer read state through **`IShopState`** (SyncVar / SyncDictionary keyed by `ProductCatalog` index) and change it through **`IShopCommands`** (direct call on the host, `[Command]` on clients).
+- **Gameplay UI** lives on the `Shop UI` canvas in `Demo`: the `PurchaseTerminal` (an `IInteractable`, opened with E through Akila's `InteractionsManager`) drives `PurchaseTerminalView` / `PurchaseTerminalPresenter`, and `MoneyHudView` shows the balance. Any UI that needs the cursor takes `IPlayerInputLock`, which toggles `FPSFrameworkCore.IsInputActive` and the cursor and is reference-counted per owner.
+- Akila HUD (pause, ammo, hitmarker) is spawned by `Game Manager` through its `uIManager` field, which `Demo` points at Pro's `HUD Variant`.
 - `Demo` uses Akila Pro's `Game Manager Variant` with `GameModer` / `GameModerUI` removed (no deathmatch) and `NetworkStartPosition` on the spawn points.
 
-Vendor patches: Mirror `NetworkManager.StopServer/StopClient` only move a **root** NetworkManager out of DDOL (ours is parented to the root scope). Akila Pro `NetworkActor` null-guards `GameModer.Instance`.
+Vendor patches: Mirror `NetworkManager.StopServer/StopClient` only move a **root** NetworkManager out of DDOL (ours is parented to the root scope). Akila Pro `NetworkActor` null-guards `GameModer.Instance`. `PauseMenu` ignores Esc while input is locked. `AutoLeaveSession` stops the session and lets Mirror load the offline scene.
 
 `VContainerSettings.DisableScriptModifier = true` is required: otherwise VContainer overwrites every new `*LifetimeScope.cs` file with its template.
 

@@ -12,6 +12,12 @@ namespace ShooterShop.Network
         [SyncVar(hook = nameof(OnMoneySynced))]
         private int _money;
 
+        [SyncVar(hook = nameof(OnStorageSynced))]
+        private int _usedSpace;
+
+        [SyncVar(hook = nameof(OnStorageSynced))]
+        private int _capacity;
+
         private readonly SyncDictionary<int, int> _stock = new();
 
         private IWallet _wallet;
@@ -19,9 +25,13 @@ namespace ShooterShop.Network
         private ProductCatalog _catalog;
 
         public event Action MoneyChanged;
+        public event Action StorageChanged;
         public event Action<ProductConfig> StockChanged;
 
         public int Money => _money;
+        public int UsedSpace => _usedSpace;
+        public int Capacity => _capacity;
+        public int FreeSpace => _capacity - _usedSpace;
 
         [Inject]
         public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog)
@@ -45,6 +55,8 @@ namespace ShooterShop.Network
         public override void OnStartServer()
         {
             _money = _wallet.Balance;
+            _capacity = _warehouse.Capacity;
+            _usedSpace = _warehouse.UsedSpace;
 
             foreach (var (product, amount) in _warehouse.Stock)
                 _stock[_catalog.IndexOf(product)] = amount;
@@ -90,6 +102,7 @@ namespace ShooterShop.Network
 
         private void OnWarehouseChanged(ProductConfig product, int amount)
         {
+            _usedSpace = _warehouse.UsedSpace;
             var index = _catalog.IndexOf(product);
 
             if (amount == 0)
@@ -99,6 +112,8 @@ namespace ShooterShop.Network
         }
 
         private void OnMoneySynced(int _, int __) => MoneyChanged?.Invoke();
+
+        private void OnStorageSynced(int _, int __) => StorageChanged?.Invoke();
 
         private void OnStockSynced(SyncIDictionary<int, int>.Operation _, int index, int __)
         {
