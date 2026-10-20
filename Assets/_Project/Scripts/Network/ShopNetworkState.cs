@@ -1,6 +1,7 @@
 using System;
 using Mirror;
 using ShooterShop.Catalog;
+using ShooterShop.Customers;
 using ShooterShop.Economy;
 using ShooterShop.Storage;
 using VContainer;
@@ -23,6 +24,7 @@ namespace ShooterShop.Network
         private IWallet _wallet;
         private IWarehouse _warehouse;
         private ProductCatalog _catalog;
+        private ICustomerService _customers;
 
         public event Action MoneyChanged;
         public event Action StorageChanged;
@@ -34,8 +36,9 @@ namespace ShooterShop.Network
         public int FreeSpace => _capacity - _usedSpace;
 
         [Inject]
-        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog)
+        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers)
         {
+            _customers = customers;
             _wallet = wallet;
             _warehouse = warehouse;
             _catalog = catalog;
@@ -50,6 +53,22 @@ namespace ShooterShop.Network
                 ServerPurchase(product, amount);
             else
                 CmdPurchase(_catalog.IndexOf(product), amount);
+        }
+
+        public void Sell(Customer customer)
+        {
+            if (isServer)
+                _customers.TrySell(customer);
+            else
+                CmdSell(customer);
+        }
+
+        public void Dismiss(Customer customer)
+        {
+            if (isServer)
+                _customers.Dismiss(customer);
+            else
+                CmdDismiss(customer);
         }
 
         public override void OnStartServer()
@@ -86,6 +105,20 @@ namespace ShooterShop.Network
         {
             if (_catalog.TryGet(productIndex, out var product))
                 ServerPurchase(product, amount);
+        }
+
+        [Command(requiresAuthority = false)]
+        private void CmdSell(Customer customer)
+        {
+            if (customer != null)
+                _customers.TrySell(customer);
+        }
+
+        [Command(requiresAuthority = false)]
+        private void CmdDismiss(Customer customer)
+        {
+            if (customer != null)
+                _customers.Dismiss(customer);
         }
 
         [Server]

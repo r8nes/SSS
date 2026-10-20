@@ -1,10 +1,12 @@
 using ShooterShop.Catalog;
+using ShooterShop.Customers;
 using ShooterShop.Economy;
 using ShooterShop.Hud;
 using ShooterShop.Input;
 using ShooterShop.Loading;
 using ShooterShop.Network;
 using ShooterShop.Purchasing;
+using ShooterShop.Sales;
 using ShooterShop.Storage;
 using Sirenix.OdinInspector;
 using UnityEngine;
@@ -21,6 +23,9 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private ProductCatalog _productCatalog;
 
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private CustomerConfig _customerConfig;
+
         [BoxGroup("Network"), Required, SceneObjectsOnly]
         [SerializeField] private ShopNetworkState _shopNetworkState;
 
@@ -29,6 +34,12 @@ namespace ShooterShop.Bootstrap
 
         [BoxGroup("Purchasing"), Required, SceneObjectsOnly]
         [SerializeField] private PurchaseTerminalView _purchaseTerminalView;
+
+        [BoxGroup("Customers"), Required, SceneObjectsOnly]
+        [SerializeField] private ShopLayout _shopLayout;
+
+        [BoxGroup("Customers"), Required, SceneObjectsOnly]
+        [SerializeField] private SaleDialogView _saleDialogView;
 
         [BoxGroup("Hud"), Required, SceneObjectsOnly]
         [SerializeField] private MoneyHudView _moneyHudView;
@@ -47,6 +58,15 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_purchaseTerminal);
             builder.RegisterComponent(_purchaseTerminalView);
             builder.RegisterEntryPoint<PurchaseTerminalPresenter>();
+
+            builder.RegisterInstance(_customerConfig);
+            builder.RegisterComponent(_shopLayout);
+            builder.Register<CustomerDirector>(Lifetime.Singleton).AsImplementedInterfaces();
+            builder.RegisterEntryPoint<CustomerSpawnRegistrar>();
+            builder.Register<CustomerRegistry>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
+
+            builder.RegisterComponent(_saleDialogView);
+            builder.Register<SalePresenter>(Lifetime.Singleton).AsImplementedInterfaces();
 
             builder.RegisterComponent(_moneyHudView);
             builder.RegisterEntryPoint<MoneyHudPresenter>();
