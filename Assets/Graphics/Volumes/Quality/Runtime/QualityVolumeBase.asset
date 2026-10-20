@@ -1,0 +1,800 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-8697805489666370511
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b61f21159c874971b4ceb3d2646c754c, type: 3}
+  m_Name: ContactShadows
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.ContactShadows
+  active: 1
+  quality:
+    m_OverrideState: 0
+    m_Value: 1
+  enable:
+    m_OverrideState: 0
+    m_Value: 0
+  length:
+    m_OverrideState: 0
+    m_Value: 0.15
+  opacity:
+    m_OverrideState: 0
+    m_Value: 1
+  distanceScaleFactor:
+    m_OverrideState: 0
+    m_Value: 0.5
+  maxDistance:
+    m_OverrideState: 0
+    m_Value: 50
+  minDistance:
+    m_OverrideState: 0
+    m_Value: 0
+  fadeDistance:
+    m_OverrideState: 0
+    m_Value: 5
+  fadeInDistance:
+    m_OverrideState: 0
+    m_Value: 0
+  rayBias:
+    m_OverrideState: 0
+    m_Value: 0.2
+  thicknessScale:
+    m_OverrideState: 0
+    m_Value: 0.15
+  m_SampleCount:
+    m_OverrideState: 0
+    m_Value: 10
+--- !u!114 &-8281939580489940783
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ccf1aba9553839d41ae37dd52e9ebcce, type: 3}
+  m_Name: MotionBlur
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.MotionBlur
+  active: 1
+  mode:
+    m_OverrideState: 0
+    m_Value: 0
+  quality:
+    m_OverrideState: 0
+    m_Value: 0
+  intensity:
+    m_OverrideState: 0
+    m_Value: 0
+  clamp:
+    m_OverrideState: 0
+    m_Value: 0.05
+--- !u!114 &-8185410507531617817
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a76fd08475e21554b8f284f723dd7cf8, type: 3}
+  m_Name: WaterRenderingSettings
+  m_EditorClassIdentifier: Aetheria.Runtime::Aetheria.Runtime.Water.WaterRenderingSettings
+  active: 1
+  enabled:
+    m_OverrideState: 0
+    m_Value: 1
+  simulationResolution:
+    m_OverrideState: 0
+    m_Value: 256
+  ambientProbeDimmer:
+    m_OverrideState: 0
+    m_Value: 0.5
+--- !u!114 &-6394705397345802
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0b2db86121404754db890f4c8dfe81b2, type: 3}
+  m_Name: Bloom
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.Bloom
+  active: 1
+  threshold:
+    m_OverrideState: 0
+    m_Value: 0.8
+  intensity:
+    m_OverrideState: 0
+    m_Value: 0
+  scatter:
+    m_OverrideState: 0
+    m_Value: 0.7
+  tint:
+    m_OverrideState: 0
+    m_Value: {r: 1, g: 1, b: 1, a: 1}
+  dirtTexture:
+    m_OverrideState: 0
+    m_Value: {fileID: 0}
+  dirtIntensity:
+    m_OverrideState: 0
+    m_Value: 0
+  anamorphic:
+    m_OverrideState: 0
+    m_Value: 1
+  m_Resolution:
+    m_OverrideState: 0
+    m_Value: 2
+  m_HighQualityPrefiltering:
+    m_OverrideState: 0
+    m_Value: 0
+  m_HighQualityFiltering:
+    m_OverrideState: 0
+    m_Value: 1
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d7fd9488000d3734a9e00ee676215985, type: 3}
+  m_Name: QualityVolumeBase
+  m_EditorClassIdentifier: Unity.RenderPipelines.Core.Runtime::UnityEngine.Rendering.VolumeProfile
+  components:
+  - {fileID: -7000000000000000005}
+  - {fileID: -7000000000000000006}
+  - {fileID: 6259157162577290919}
+  - {fileID: 4856552905977127026}
+  - {fileID: -8697805489666370511}
+  - {fileID: -8281939580489940783}
+  - {fileID: -6394705397345802}
+  - {fileID: 3110167674316611677}
+  - {fileID: 6641779744450155208}
+  - {fileID: 5906268848252579547}
+  - {fileID: -8185410507531617817}
+--- !u!114 &-7000000000000000005
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dfe0aabdfcca48cb96d991377e40473d, type: 3}
+  m_Name: Fog
+  m_EditorClassIdentifier: Aetheria.Runtime::Aetheria.Runtime.Overrides.FogVolume
+  active: 1
+  GridPreset: {m_OverrideState: 0, m_Value: 2}
+  FroxelWidth: {m_OverrideState: 0, m_Value: 160}
+  FroxelHeight: {m_OverrideState: 0, m_Value: 90}
+  FroxelDepth: {m_OverrideState: 0, m_Value: 64}
+  SliceDistributionUniformity: {m_OverrideState: 0, m_Value: 0.75}
+  GaussianFilterEnabled: {m_OverrideState: 0, m_Value: 1}
+  ReconstructionFilter: {m_OverrideState: 0, m_Value: 0}
+  MainLightShadowsEnabled: {m_OverrideState: 0, m_Value: 1}
+--- !u!114 &-7000000000000000006
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f1d90b0511784c9c8166110a4219774c, type: 3}
+  m_Name: GrassVolumeComponent
+  m_EditorClassIdentifier: Nelum.Runtime::Nelum.Rendering.GrassVolumeComponent
+  active: 1
+  state: {m_OverrideState: 0, m_Value: 1}
+  maxDistance: {m_OverrideState: 0, m_Value: 300}
+  distanceFadeDistance: {m_OverrideState: 0, m_Value: 36}
+  targetRootSpacingPixels: {m_OverrideState: 0, m_Value: 3}
+  maximumBladeSegments: {m_OverrideState: 0, m_Value: 5}
+  motionVectors: {m_OverrideState: 0, m_Value: 1}
+  motionVectorDistance: {m_OverrideState: 0, m_Value: 48}
+  interactionWorldSize: {m_OverrideState: 0, m_Value: 128}
+  basePatchSize: {m_OverrideState: 0, m_Value: 1.5}
+  targetPixelsPerBladeSegment: {m_OverrideState: 0, m_Value: 4}
+  lightingDetailStartDistance: {m_OverrideState: 0, m_Value: 75}
+  lightingDetailEndDistance: {m_OverrideState: 0, m_Value: 225}
+  interactionResolution: {m_OverrideState: 0, m_Value: 128}
+  maximumInteractors: {m_OverrideState: 0, m_Value: 64}
+  interactionSimulationFrequency: {m_OverrideState: 0, m_Value: 30}
+  windResolution: {m_OverrideState: 0, m_Value: 128}
+  windWorldSize: {m_OverrideState: 0, m_Value: 192}
+  windSimulationFrequency: {m_OverrideState: 0, m_Value: 30}
+  debugView: {m_OverrideState: 0, m_Value: 0}
+--- !u!114 &3110167674316611677
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8947d4b56f5daad4590978c0ecfa6f7c, type: 3}
+  m_Name: VolumetricClouds
+  m_EditorClassIdentifier: Aetheria.Runtime::Aetheria.Runtime.Overrides.VolumetricClouds
+  active: 1
+  enable:
+    m_OverrideState: 0
+    m_Value: 0
+  cloudSimpleMode:
+    m_OverrideState: 0
+    m_Value: 0
+  m_CloudPreset:
+    m_OverrideState: 0
+    m_Value: 1
+  densityMultiplier:
+    m_OverrideState: 0
+    m_Value: 0.4
+  densityCurve:
+    m_OverrideState: 0
+    m_Value:
+      serializedVersion: 2
+      m_Curve:
+      - serializedVersion: 3
+        time: 0
+        value: 0
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      - serializedVersion: 3
+        time: 0.15
+        value: 1
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      - serializedVersion: 3
+        time: 1
+        value: 0.1
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      m_PreInfinity: 2
+      m_PostInfinity: 2
+      m_RotationOrder: 4
+  shapeFactor:
+    m_OverrideState: 0
+    m_Value: 0.9
+  shapeScale:
+    m_OverrideState: 0
+    m_Value: 5
+  erosionFactor:
+    m_OverrideState: 0
+    m_Value: 0.8
+  erosionScale:
+    m_OverrideState: 0
+    m_Value: 107
+  erosionCurve:
+    m_OverrideState: 0
+    m_Value:
+      serializedVersion: 2
+      m_Curve:
+      - serializedVersion: 3
+        time: 0
+        value: 1
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      - serializedVersion: 3
+        time: 0.1
+        value: 0.9
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      - serializedVersion: 3
+        time: 1
+        value: 1
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      m_PreInfinity: 2
+      m_PostInfinity: 2
+      m_RotationOrder: 4
+  ambientOcclusionCurve:
+    m_OverrideState: 0
+    m_Value:
+      serializedVersion: 2
+      m_Curve:
+      - serializedVersion: 3
+        time: 0
+        value: 0
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      - serializedVersion: 3
+        time: 0.25
+        value: 0.4
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      - serializedVersion: 3
+        time: 1
+        value: 0
+        inSlope: 0
+        outSlope: 0
+        tangentMode: 0
+        weightedMode: 0
+        inWeight: 0
+        outWeight: 0
+      m_PreInfinity: 2
+      m_PostInfinity: 2
+      m_RotationOrder: 4
+  microErosionFactor:
+    m_OverrideState: 0
+    m_Value: 0.5
+  microErosionScale:
+    m_OverrideState: 0
+    m_Value: 200
+  bottomAltitude:
+    m_OverrideState: 0
+    m_Value: 1200
+  altitudeRange:
+    m_OverrideState: 0
+    m_Value: 2000
+  shapeOffset:
+    m_OverrideState: 0
+    m_Value: {x: 0, y: 0, z: 0}
+  globalWindSpeed:
+    m_OverrideState: 0
+    m_Value:
+      mode: 1
+      customValue: 100
+      additiveValue: 0
+      multiplyValue: 1
+  orientation:
+    m_OverrideState: 0
+    m_Value:
+      mode: 1
+      customValue: 0
+      additiveValue: 0
+      multiplyValue: 1
+  shapeSpeedMultiplier:
+    m_OverrideState: 0
+    m_Value: 1
+  erosionSpeedMultiplier:
+    m_OverrideState: 0
+    m_Value: 0.25
+  altitudeDistortion:
+    m_OverrideState: 0
+    m_Value: 0.25
+  verticalShapeWindSpeed:
+    m_OverrideState: 0
+    m_Value: 0
+  verticalErosionWindSpeed:
+    m_OverrideState: 0
+    m_Value: 0
+  ambientLightProbeDimmer:
+    m_OverrideState: 0
+    m_Value: 1
+  sunLightDimmer:
+    m_OverrideState: 0
+    m_Value: 1
+  erosionOcclusion:
+    m_OverrideState: 0
+    m_Value: 0.1
+  scatteringTint:
+    m_OverrideState: 0
+    m_Value: {r: 0, g: 0, b: 0, a: 1}
+  multiScattering:
+    m_OverrideState: 0
+    m_Value: 0.5
+  powderEffectIntensity:
+    m_OverrideState: 0
+    m_Value: 0.25
+  fullResolution:
+    m_OverrideState: 0
+    m_Value: 0
+  perceptualBlending:
+    m_OverrideState: 0
+    m_Value: 1
+  temporalAccumulationFactor:
+    m_OverrideState: 0
+    m_Value: 0.95
+  ghostingReduction:
+    m_OverrideState: 0
+    m_Value: 1
+  numPrimarySteps:
+    m_OverrideState: 0
+    m_Value: 64
+  numLightSteps:
+    m_OverrideState: 0
+    m_Value: 6
+  fadeInMode:
+    m_OverrideState: 0
+    m_Value: 0
+  fadeInStart:
+    m_OverrideState: 0
+    m_Value: 0
+  fadeInDistance:
+    m_OverrideState: 0
+    m_Value: 0
+--- !u!114 &4856552905977127026
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2274cd80d4e22254d98d0282578183e0, type: 3}
+  m_Name: ScreenSpaceReflectionVolumeSettings
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.ScreenSpaceReflectionVolumeSettings
+  active: 1
+  mode:
+    m_OverrideState: 0
+    m_Value: 1
+  reflectionStrength:
+    m_OverrideState: 0
+    m_Value: 1
+  clampReflectedColor:
+    m_OverrideState: 0
+    m_Value: 0
+  maxColorValue:
+    m_OverrideState: 0
+    m_Value: 1
+  resolution:
+    m_OverrideState: 0
+    m_Value: 2
+  upscalingMethod:
+    m_OverrideState: 0
+    m_Value: 1
+  marchingMethod:
+    m_OverrideState: 0
+    m_Value: 1
+  hitRefinementSteps:
+    m_OverrideState: 0
+    m_Value: 5
+  finalThicknessMultiplier:
+    m_OverrideState: 0
+    m_Value: 0.16
+  roughnessFilter:
+    m_OverrideState: 0
+    m_Value: 2
+  roughnessScale:
+    m_OverrideState: 0
+    m_Value: 0
+  minimumSmoothness:
+    m_OverrideState: 0
+    m_Value: 0.05
+  smoothnessFadeStart:
+    m_OverrideState: 0
+    m_Value: 0.1
+  normalFade:
+    m_OverrideState: 0
+    m_Value: 0
+  screenEdgeFadeDistance:
+    m_OverrideState: 0
+    m_Value: 0.2
+  reflectSky:
+    m_OverrideState: 0
+    m_Value: 0
+  maxRayLength:
+    m_OverrideState: 0
+    m_Value: 30
+  rayLengthFade:
+    m_OverrideState: 0
+    m_Value: 1
+  maxRaySteps:
+    m_OverrideState: 0
+    m_Value: 64
+  roughRayConeScale:
+    m_OverrideState: 0
+    m_Value: 0.125
+  maxRoughRayStartMip:
+    m_OverrideState: 0
+    m_Value: 4
+  objectThickness:
+    m_OverrideState: 0
+    m_Value: 0.01
+  temporalFiltering:
+    m_OverrideState: 0
+    m_Value: 0
+  baseBlendFactor:
+    m_OverrideState: 0
+    m_Value: 0.95
+--- !u!114 &5906268848252579547
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 91642a45e6274100ac19cffe0f8bf395, type: 3}
+  m_Name: CloudLayer
+  m_EditorClassIdentifier: Aetheria.Runtime::Aetheria.Runtime.Overrides.CloudLayer
+  active: 1
+  State:
+    m_OverrideState: 0
+    m_Value: 0
+  Opacity:
+    m_OverrideState: 0
+    m_Value: 1
+  UpperHemisphereOnly:
+    m_OverrideState: 0
+    m_Value: 1
+  Layers:
+    m_OverrideState: 0
+    m_Value: 0
+  Resolution:
+    m_OverrideState: 0
+    m_Value: 1024
+  LayerA:
+    Texture:
+      m_OverrideState: 0
+      m_Value: {fileID: 0}
+      dimension: 1
+    OpacityR:
+      m_OverrideState: 0
+      m_Value: 1
+    OpacityG:
+      m_OverrideState: 0
+      m_Value: 0
+    OpacityB:
+      m_OverrideState: 0
+      m_Value: 0
+    OpacityA:
+      m_OverrideState: 0
+      m_Value: 0
+    Altitude:
+      m_OverrideState: 0
+      m_Value: 2000
+    Rotation:
+      m_OverrideState: 0
+      m_Value: 0
+    Tint:
+      m_OverrideState: 0
+      m_Value: {r: 1, g: 1, b: 1, a: 1}
+    Exposure:
+      m_OverrideState: 0
+      m_Value: 0
+    DistortionMode:
+      m_OverrideState: 0
+      m_Value: 0
+    scrollOrientation:
+      m_OverrideState: 0
+      m_Value:
+        mode: 1
+        customValue: 0
+        additiveValue: 0
+        multiplyValue: 1
+    scrollSpeed:
+      m_OverrideState: 0
+      m_Value:
+        mode: 1
+        customValue: 100
+        additiveValue: 0
+        multiplyValue: 1
+    SelfShadow:
+      m_OverrideState: 0
+      m_Value: 1
+    LightSteps:
+      m_OverrideState: 0
+      m_Value: 6
+    Density:
+      m_OverrideState: 0
+      m_Value: 0.5
+    AmbientProbeDimmer:
+      m_OverrideState: 0
+      m_Value: 1
+  LayerB:
+    Texture:
+      m_OverrideState: 0
+      m_Value: {fileID: 0}
+      dimension: 1
+    OpacityR:
+      m_OverrideState: 0
+      m_Value: 1
+    OpacityG:
+      m_OverrideState: 0
+      m_Value: 0
+    OpacityB:
+      m_OverrideState: 0
+      m_Value: 0
+    OpacityA:
+      m_OverrideState: 0
+      m_Value: 0
+    Altitude:
+      m_OverrideState: 0
+      m_Value: 2000
+    Rotation:
+      m_OverrideState: 0
+      m_Value: 0
+    Tint:
+      m_OverrideState: 0
+      m_Value: {r: 1, g: 1, b: 1, a: 1}
+    Exposure:
+      m_OverrideState: 0
+      m_Value: 0
+    DistortionMode:
+      m_OverrideState: 0
+      m_Value: 0
+    scrollOrientation:
+      m_OverrideState: 0
+      m_Value:
+        mode: 1
+        customValue: 0
+        additiveValue: 0
+        multiplyValue: 1
+    scrollSpeed:
+      m_OverrideState: 0
+      m_Value:
+        mode: 1
+        customValue: 100
+        additiveValue: 0
+        multiplyValue: 1
+    SelfShadow:
+      m_OverrideState: 0
+      m_Value: 1
+    LightSteps:
+      m_OverrideState: 0
+      m_Value: 6
+    Density:
+      m_OverrideState: 0
+      m_Value: 0.5
+    AmbientProbeDimmer:
+      m_OverrideState: 0
+      m_Value: 1
+--- !u!114 &6259157162577290919
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5182da28fcdc1ac41a47126f0d404cf8, type: 3}
+  m_Name: ScreenSpaceAmbientOcclusionVolumeOverride
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.ScreenSpaceAmbientOcclusionVolumeOverride
+  active: 1
+  m_Mode:
+    m_OverrideState: 0
+    m_Value: 0
+  m_Quality:
+    m_OverrideState: 0
+    m_Value: 1
+  m_Intensity:
+    m_OverrideState: 0
+    m_Value: 1
+  m_Radius:
+    m_OverrideState: 0
+    m_Value: 0.3
+  m_DirectLightingStrength:
+    m_OverrideState: 0
+    m_Value: 0
+  m_FalloffDistance:
+    m_OverrideState: 0
+    m_Value: 100
+  m_SampleCount:
+    m_OverrideState: 0
+    m_Value: 1
+  m_Downsample:
+    m_OverrideState: 0
+    m_Value: 0
+  m_AfterOpaque:
+    m_OverrideState: 0
+    m_Value: 0
+  m_BlurQuality:
+    m_OverrideState: 0
+    m_Value: 2
+  m_Method:
+    m_OverrideState: 0
+    m_Value: 1
+  m_DepthSource:
+    m_OverrideState: 0
+    m_Value: 1
+  m_NormalQuality:
+    m_OverrideState: 0
+    m_Value: 1
+  m_MinimumRadiusInPixels:
+    m_OverrideState: 0
+    m_Value: 40
+  m_MaximumRadiusInPixels:
+    m_OverrideState: 0
+    m_Value: 80
+  m_SpatialFilter:
+    m_OverrideState: 0
+    m_Value: 0
+  m_TemporalFilter:
+    m_OverrideState: 0
+    m_Value: 0
+  m_GhostingMitigation:
+    m_OverrideState: 0
+    m_Value: 0.5
+  m_HistoryLength:
+    m_OverrideState: 0
+    m_Value: 0.9
+  m_DirectionCount:
+    m_OverrideState: 0
+    m_Value: 2
+  m_StepCount:
+    m_OverrideState: 0
+    m_Value: 4
+--- !u!114 &6641779744450155208
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c01700fd266d6914ababb731e09af2eb, type: 3}
+  m_Name: DepthOfField
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.DepthOfField
+  active: 1
+  mode:
+    m_OverrideState: 0
+    m_Value: 0
+  gaussianStart:
+    m_OverrideState: 0
+    m_Value: 10
+  gaussianEnd:
+    m_OverrideState: 0
+    m_Value: 30
+  gaussianMaxRadius:
+    m_OverrideState: 0
+    m_Value: 1
+  highQualitySampling:
+    m_OverrideState: 0
+    m_Value: 0
+  focusDistance:
+    m_OverrideState: 0
+    m_Value: 10
+  aperture:
+    m_OverrideState: 0
+    m_Value: 5.6
+  focalLength:
+    m_OverrideState: 0
+    m_Value: 50
+  bladeCount:
+    m_OverrideState: 0
+    m_Value: 5
+  bladeCurvature:
+    m_OverrideState: 0
+    m_Value: 1
+  bladeRotation:
+    m_OverrideState: 0
+    m_Value: 0

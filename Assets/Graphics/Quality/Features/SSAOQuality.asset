@@ -1,0 +1,55 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 69a36b61287849ff8489ae9f5e25b641, type: 3}
+  m_Name: SSAOQuality
+  m_EditorClassIdentifier: 
+  _id:
+    _a: 1165032693
+    _b: -805616624
+    _c: -2016339339
+    _d: -1662025202
+  _displayName: Ambient Occlusion
+  _category: Lighting
+  _rendererFeature: {fileID: 0}
+  _tiers:
+  - Id:
+      _a: 514607764
+      _b: 611143071
+      _c: -1111489478
+      _d: 2130429334
+    DisplayName: Off
+    Patch: {fileID: 11400000, guid: 506c5d7a94901854292463ddc091406a, type: 2}
+    RendererFeature: 0
+  - Id:
+      _a: -1597847614
+      _b: -99790970
+      _c: -2049702975
+      _d: 1996394683
+    DisplayName: Low
+    Patch: {fileID: 11400000, guid: 0e32afc33ad240446b6760f9e1c06ebf, type: 2}
+    RendererFeature: 0
+  - Id:
+      _a: -1506760585
+      _b: 818629572
+      _c: -1840964021
+      _d: -1744200641
+    DisplayName: Medium
+    Patch: {fileID: 11400000, guid: d02273d42cf33544390932c59f39d3d0, type: 2}
+    RendererFeature: 0
+  - Id:
+      _a: 1418557608
+      _b: -624145065
+      _c: -1875914383
+      _d: -1085779628
+    DisplayName: High
+    Patch: {fileID: 11400000, guid: 36f3bf7e89cb5484d865edaece5781ab, type: 2}
+    RendererFeature: 0

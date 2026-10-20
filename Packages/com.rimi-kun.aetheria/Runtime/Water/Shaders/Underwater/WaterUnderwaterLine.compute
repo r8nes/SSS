@@ -1,0 +1,145 @@
+#pragma only_renderers d3d11 vulkan
+#pragma target 5.0
+
+#pragma kernel ClearWaterLine
+#pragma kernel LineEvaluation1D
+#pragma kernel BoundsPropagation
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+
+TEXTURE2D_X_FLOAT(_WaterDepthTexture);
+StructuredBuffer<float> _WaterCameraHeightBuffer;
+RWStructuredBuffer<uint> _WaterUnderwaterLineRW;
+
+float4 _WaterUnderwaterBoundsSS;
+float4 _WaterUnderwaterUpDirection;
+float4 _WaterUnderwaterScreenSize;
+uint _WaterUnderwaterBufferStride;
+
+float GetWaterCameraHeight()
+{
+    return _WaterCameraHeightBuffer[0];
+}
+
+[numthreads(8, 1, 1)]
+void ClearWaterLine(uint dispatchThreadId : SV_DispatchThreadID)
+{
+    if (dispatchThreadId >= _WaterUnderwaterBufferStride)
+        return;
+    _WaterUnderwaterLineRW[dispatchThreadId] = 0u;
+}
+
+[numthreads(8, 8, 1)]
+void LineEvaluation1D(uint3 currentCoord : SV_DispatchThreadID)
+{
+    uint2 screenSize = (uint2)_WaterUnderwaterScreenSize.xy;
+    if (currentCoord.x >= screenSize.x || currentCoord.y >= screenSize.y)
+        return;
+
+    float depthValue = LOAD_TEXTURE2D_X(_WaterDepthTexture, currentCoord.xy).r;
+    if (depthValue == UNITY_RAW_FAR_CLIP_VALUE)
+        return;
+
+    uint stencilValue = GetStencilValue(_WaterStencilTexture.Load(int3(currentCoord.xy, 0)));
+    if (stencilValue == 0u)
+        return;
+
+    float2 upVector = _WaterUnderwaterUpDirection.xy;
+    float2 rightVector = float2(upVector.y, -upVector.x);
+
+    uint posX = (uint)max(round(dot((float2)currentCoord.xy, rightVector) - _WaterUnderwaterBoundsSS.x), 0.0);
+    uint posY = (uint)max(round(dot((float2)currentCoord.xy, upVector) - _WaterUnderwaterBoundsSS.z), 0.0);
+
+    uint height = posY + 1u;
+    uint packedValue = PackFloatToUInt(depthValue, 16, 16) | (height & 0xFFFFu);
+    uint idx = min(posX + 2u, _WaterUnderwaterBufferStride - 1u);
+    InterlockedMax(_WaterUnderwaterLineRW[idx], packedValue);
+}
+
+#define WATER_LINE_GROUP_SIZE 64
+#ifndef PLATFORM_SUPPORTS_WAVE_INTRINSICS
+groupshared uint2 gs_WaterLineBounds[WATER_LINE_GROUP_SIZE];
+#endif
+
+uint2 WaterLineParallelReduction(uint threadIdx, uint2 bounds)
+{
+#ifdef PLATFORM_SUPPORTS_WAVE_INTRINSICS
+    return uint2(WaveActiveMin(bounds.x), WaveActiveMax(bounds.y));
+#else
+    gs_WaterLineBounds[threadIdx] = bounds;
+    GroupMemoryBarrierWithGroupSync();
+
+    UNITY_UNROLL
+    for (uint s = WATER_LINE_GROUP_SIZE / 2u; s > 0u; s >>= 1u)
+    {
+        if (threadIdx < s)
+        {
+            gs_WaterLineBounds[threadIdx] = uint2(
+                min(gs_WaterLineBounds[threadIdx].x, gs_WaterLineBounds[threadIdx + s].x),
+                max(gs_WaterLineBounds[threadIdx].y, gs_WaterLineBounds[threadIdx + s].y));
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    return gs_WaterLineBounds[0];
+#endif
+}
+
+[numthreads(WATER_LINE_GROUP_SIZE, 1, 1)]
+void BoundsPropagation(uint3 dispatchThreadId : SV_DispatchThreadID, uint3 groupThreadId3 : SV_GroupThreadID)
+{
+    uint currentCoord = dispatchThreadId.x;
+    uint groupThreadId = groupThreadId3.x;
+    const uint2 maxBounds = uint2(0xFFFFFFFFu, 0u);
+
+    // Every lane must participate in the group reduction. Returning before
+    // GroupMemoryBarrierWithGroupSync is invalid for the padded tail group.
+    bool validCoord = currentCoord + 2u < _WaterUnderwaterBufferStride;
+    uint coord = min(currentCoord + 2u, _WaterUnderwaterBufferStride - 1u);
+    uint packedValue = validCoord ? _WaterUnderwaterLineRW[coord] : 0u;
+    uint2 bounds = validCoord && packedValue != 0u ? (uint2)currentCoord : maxBounds;
+    bounds = WaterLineParallelReduction(groupThreadId, bounds);
+
+    if (groupThreadId == 0u && any(bounds != maxBounds))
+    {
+        InterlockedMax(_WaterUnderwaterLineRW[0], 0xFFFFFFFFu - bounds.x);
+        InterlockedMax(_WaterUnderwaterLineRW[1], bounds.y);
+    }
+
+    if (!validCoord)
+        return;
+
+    uint maxHeight = (uint)max(ceil(_WaterUnderwaterBoundsSS.w - _WaterUnderwaterBoundsSS.z), 1.0);
+    float distanceToSurface = GetWaterCameraHeight();
+    float distanceToWaterLine = distanceToSurface > 0.0 ? 0.0 : (float)maxHeight;
+    float nearPlane = _ProjectionParams.y;
+    if (abs(distanceToSurface) > nearPlane * 2.0)
+    {
+        _WaterUnderwaterLineRW[coord] = ((uint)distanceToWaterLine + 1u) & 0xFFFFu;
+        return;
+    }
+
+    if (packedValue != 0u)
+        return;
+
+    if (any(bounds != maxBounds))
+    {
+        uint bound = bounds.x != maxBounds.x ? bounds.x : bounds.y;
+        packedValue = _WaterUnderwaterLineRW[min(bound + 2u, _WaterUnderwaterBufferStride - 1u)];
+    }
+
+    if (packedValue == 0u)
+        packedValue = _WaterUnderwaterLineRW[2u];
+    if (packedValue == 0u)
+        packedValue = _WaterUnderwaterLineRW[_WaterUnderwaterBufferStride - 1u];
+
+    if (packedValue != 0u)
+    {
+        distanceToWaterLine = (float)((packedValue & 0xFFFFu) - 1u);
+        distanceToWaterLine = round(distanceToWaterLine / maxHeight) * maxHeight;
+    }
+
+    _WaterUnderwaterLineRW[coord] = ((uint)distanceToWaterLine + 1u) & 0xFFFFu;
+}

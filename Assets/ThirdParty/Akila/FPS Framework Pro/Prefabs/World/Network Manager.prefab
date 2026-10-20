@@ -1,0 +1,123 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &5985828163395785718
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 8475906555785365715}
+  - component: {fileID: -5147465049233760218}
+  - component: {fileID: 1336042692426986323}
+  m_Layer: 0
+  m_Name: Network Manager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &8475906555785365715
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5985828163395785718}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_RootOrder: 2
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &-5147465049233760218
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5985828163395785718}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 70d78cc0264bd7741ba0cc4ad0fe991d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  dontDestroyOnLoad: 1
+  runInBackground: 1
+  headlessStartMode: 0
+  editorAutoStart: 0
+  sendRate: 60
+  offlineScene: Assets/Akila/FPS Framework/Scenes/Main Menu.unity
+  onlineScene: 
+  offlineSceneLoadDelay: 0
+  transport: {fileID: 1336042692426986323}
+  networkAddress: localhost
+  maxConnections: 100
+  disconnectInactiveConnections: 0
+  disconnectInactiveTimeout: 60
+  authenticator: {fileID: 0}
+  playerPrefab: {fileID: 4392029710114960402, guid: df978d5ec55ddac4784326296cbb371a, type: 3}
+  autoCreatePlayer: 1
+  playerSpawnMethod: 0
+  spawnPrefabs:
+  - {fileID: 7076871783870977859, guid: cb2f33d74b38e3a4495b5086a1d31d8b, type: 3}
+  - {fileID: 312116006793150050, guid: 18d6ceab0116d634c9f9b48d0bec7ba2, type: 3}
+  - {fileID: 6100303085309168035, guid: b591972e222155b449d9f44e146a0253, type: 3}
+  - {fileID: 2134125719336730863, guid: 2c7c50e770f40224fb1d96b27fb78a70, type: 3}
+  - {fileID: 7034608002985361708, guid: add17c95da3df694aaa947ce03ce1de5, type: 3}
+  - {fileID: 8035262307449367947, guid: 6d407aeedb0d31246a68a6be2c78f589, type: 3}
+  - {fileID: 6259591872495217452, guid: 34f97b7f3743f3d4c821c3cc791900a7, type: 3}
+  - {fileID: 4679955039934827718, guid: 4c6ebced3db84654ea60ad0283e70849, type: 3}
+  - {fileID: 5889118402375637208, guid: 33b76c05006c2a34d93ce40f839b9748, type: 3}
+  - {fileID: 2337262598350748613, guid: 4e03771d0eeabfb4ba59cc7d796daa8d, type: 3}
+  - {fileID: 8077348972659958291, guid: cbb66b6628cba334aafaa86772f2ed21, type: 3}
+  - {fileID: 7661546207596582203, guid: 46984b5d8330b6248a4c7f23f8505006, type: 3}
+  - {fileID: 5646717165062745183, guid: 026290e08b3d221459b9550aaa045d1d, type: 3}
+  exceptionsDisconnect: 1
+  snapshotSettings:
+    bufferTimeMultiplier: 2
+    bufferLimit: 32
+    catchupNegativeThreshold: -1
+    catchupPositiveThreshold: 1
+    catchupSpeed: 0.019999999552965164
+    slowdownSpeed: 0.03999999910593033
+    driftEmaDuration: 1
+    dynamicAdjustment: 1
+    dynamicAdjustmentTolerance: 1
+    deliveryTimeEmaDuration: 2
+  evaluationMethod: 0
+  evaluationInterval: 3
+  timeInterpolationGui: 0
+  UISelectionCamera: {fileID: 0}
+--- !u!114 &1336042692426986323
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5985828163395785718}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6b0fecffa3f624585964b0d0eb21b18e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  port: 7777
+  DualMode: 1
+  NoDelay: 1
+  Interval: 10
+  Timeout: 10000
+  RecvBufferSize: 7361536
+  SendBufferSize: 7361536
+  FastResend: 2
+  ReceiveWindowSize: 4096
+  SendWindowSize: 4096
+  MaxRetransmit: 40
+  MaximizeSocketBuffers: 1
+  ReliableMaxMessageSize: 297433
+  UnreliableMaxMessageSize: 1194
+  debugLog: 0
+  statisticsGUI: 0
+  statisticsLog: 0

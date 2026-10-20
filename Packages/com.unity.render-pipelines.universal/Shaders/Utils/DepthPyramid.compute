@@ -1,0 +1,285 @@
+#pragma kernel KDepthCopyFromSource
+#pragma kernel KDepthCopyFromSourceFarthest ENABLE_FARTHEST_PYRAMID
+#pragma kernel KDepthDownsampleFromSource
+#pragma kernel KDepthDownsampleFromSourceCheckerboard ENABLE_CHECKERBOARD
+#pragma kernel KDepthDownsampleFromSourceFarthest ENABLE_FARTHEST_PYRAMID ENABLE_CHECKERBOARD
+#pragma kernel KDepthDownsampleDualUav
+#pragma kernel KDepthDownsampleDualUavCheckerboard ENABLE_CHECKERBOARD
+#pragma kernel KDepthDownsampleDualUavFarthest ENABLE_FARTHEST_PYRAMID ENABLE_CHECKERBOARD
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+RWTexture2D<float> _DepthAtlas;
+#if defined(ENABLE_FARTHEST_PYRAMID)
+RWTexture2D<float> _DepthAtlasFarthest;
+#endif
+TEXTURE2D_FLOAT(_SourceDepthTexture);
+
+int _MinDstCount;
+int _CbDstCount;
+int2 _SrcOffset;
+int2 _SrcLimit;
+int2 _SrcSize;
+int2 _DstSize0;
+int2 _DstSize1;
+int2 _DstSize2;
+int2 _DstSize3;
+int2 _MinDstOffset0;
+int2 _MinDstOffset1;
+int2 _MinDstOffset2;
+int2 _MinDstOffset3;
+int2 _CbDstOffset0;
+int2 _CbDstOffset1;
+
+#if UNITY_REVERSED_Z
+#define MIN_DEPTH(A, B) max((A), (B))
+#define MAX_DEPTH(A, B) min((A), (B))
+#define MIN3_DEPTH(A, B, C) Max3((A), (B), (C))
+#define MAX3_DEPTH(A, B, C) Min3((A), (B), (C))
+#else
+#define MIN_DEPTH(A, B) min((A), (B))
+#define MAX_DEPTH(A, B) max((A), (B))
+#define MIN3_DEPTH(A, B, C) Min3((A), (B), (C))
+#define MAX3_DEPTH(A, B, C) Max3((A), (B), (C))
+#endif
+
+uint2 CoordInTileByIndex(uint i)
+{
+    return uint2(i & 1u | i >> 2u & 6u,
+                 i >> 1u & 3u | i >> 3u & 4u);
+}
+
+groupshared float s_minDepth[32];
+#if defined(ENABLE_CHECKERBOARD) || defined(ENABLE_FARTHEST_PYRAMID)
+groupshared float s_maxDepth[32];
+#endif
+
+void SubgroupMergeDepths(uint threadID, uint bitIndex, inout float minDepth, inout float maxDepth)
+{
+    uint highIndex = threadID >> (bitIndex + 1u);
+    uint lowIndex = threadID & ((1u << (bitIndex + 1u)) - 1u);
+
+    if (lowIndex == 1u << bitIndex)
+    {
+        s_minDepth[highIndex] = minDepth;
+#if defined(ENABLE_CHECKERBOARD) || defined(ENABLE_FARTHEST_PYRAMID)
+        s_maxDepth[highIndex] = maxDepth;
+#endif
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (lowIndex == 0u)
+    {
+        minDepth = MIN_DEPTH(minDepth, s_minDepth[highIndex]);
+#if defined(ENABLE_CHECKERBOARD) || defined(ENABLE_FARTHEST_PYRAMID)
+        maxDepth = MAX_DEPTH(maxDepth, s_maxDepth[highIndex]);
+#endif
+    }
+    GroupMemoryBarrierWithGroupSync();
+}
+
+float CheckerboardDepth(uint2 coord, float minDepth, float maxDepth)
+{
+    return ((coord.x ^ coord.y) & 1u) != 0u ? minDepth : maxDepth;
+}
+
+void WriteGeneratedMips(uint threadID, uint2 dstCoord0, float minDepth, float maxDepth)
+{
+    if (all(dstCoord0 < (uint2)_DstSize0))
+    {
+        _DepthAtlas[_MinDstOffset0 + (int2)dstCoord0] = minDepth;
+#if defined(ENABLE_FARTHEST_PYRAMID)
+        _DepthAtlasFarthest[_MinDstOffset0 + (int2)dstCoord0] = maxDepth;
+#endif
+
+#if defined(ENABLE_CHECKERBOARD)
+        if (_CbDstCount >= 1)
+            _DepthAtlas[_CbDstOffset0 + (int2)dstCoord0] = CheckerboardDepth(dstCoord0, minDepth, maxDepth);
+#endif
+    }
+
+    SubgroupMergeDepths(threadID, 0u, minDepth, maxDepth);
+    SubgroupMergeDepths(threadID, 1u, minDepth, maxDepth);
+
+    if (_MinDstCount >= 2 && (threadID & 0x3u) == 0u)
+    {
+        int2 dstCoord1 = (int2)dstCoord0 >> 1;
+        if (all(dstCoord1 < _DstSize1))
+        {
+            _DepthAtlas[_MinDstOffset1 + dstCoord1] = minDepth;
+#if defined(ENABLE_FARTHEST_PYRAMID)
+            _DepthAtlasFarthest[_MinDstOffset1 + dstCoord1] = maxDepth;
+#endif
+#if defined(ENABLE_CHECKERBOARD)
+            if (_CbDstCount >= 2)
+                _DepthAtlas[_CbDstOffset1 + dstCoord1] = CheckerboardDepth((uint2)dstCoord1, minDepth, maxDepth);
+#endif
+        }
+    }
+
+    SubgroupMergeDepths(threadID, 2u, minDepth, maxDepth);
+    SubgroupMergeDepths(threadID, 3u, minDepth, maxDepth);
+
+    if (_MinDstCount >= 3 && (threadID & 0xfu) == 0u)
+    {
+        int2 dstCoord2 = (int2)dstCoord0 >> 2;
+        if (all(dstCoord2 < _DstSize2))
+        {
+            _DepthAtlas[_MinDstOffset2 + dstCoord2] = minDepth;
+#if defined(ENABLE_FARTHEST_PYRAMID)
+            _DepthAtlasFarthest[_MinDstOffset2 + dstCoord2] = maxDepth;
+#endif
+        }
+    }
+
+    SubgroupMergeDepths(threadID, 4u, minDepth, maxDepth);
+    SubgroupMergeDepths(threadID, 5u, minDepth, maxDepth);
+
+    if (_MinDstCount >= 4 && (threadID & 0x3fu) == 0u)
+    {
+        int2 dstCoord3 = (int2)dstCoord0 >> 3;
+        if (all(dstCoord3 < _DstSize3))
+        {
+            _DepthAtlas[_MinDstOffset3 + dstCoord3] = minDepth;
+#if defined(ENABLE_FARTHEST_PYRAMID)
+            _DepthAtlasFarthest[_MinDstOffset3 + dstCoord3] = maxDepth;
+#endif
+        }
+    }
+}
+
+void DepthCopyFromSource(uint3 dispatchThreadId)
+{
+    int2 coord = (int2)dispatchThreadId.xy;
+    if (any(coord >= _SrcSize))
+        return;
+
+    float depth = LOAD_TEXTURE2D(_SourceDepthTexture, coord).r;
+    _DepthAtlas[coord] = depth;
+#if defined(ENABLE_FARTHEST_PYRAMID)
+    _DepthAtlasFarthest[coord] = depth;
+#endif
+}
+
+void DepthDownsampleFromSource(uint threadID, uint3 groupID)
+{
+    uint2 dstCoord0 = groupID.xy << 3 | CoordInTileByIndex(threadID);
+    int2 sourceCoord00 = (int2)dstCoord0 << 1;
+    int2 sourceCoord10 = sourceCoord00 + int2(1, 0);
+    int2 sourceCoord01 = sourceCoord00 + int2(0, 1);
+    int2 sourceCoord11 = sourceCoord00 + int2(1, 1);
+
+    int2 loadCoord00 = min(sourceCoord00, _SrcLimit);
+    int2 loadCoord10 = min(sourceCoord10, _SrcLimit);
+    int2 loadCoord01 = min(sourceCoord01, _SrcLimit);
+    int2 loadCoord11 = min(sourceCoord11, _SrcLimit);
+
+    float p00 = LOAD_TEXTURE2D(_SourceDepthTexture, loadCoord00).r;
+    float p10 = LOAD_TEXTURE2D(_SourceDepthTexture, loadCoord10).r;
+    float p01 = LOAD_TEXTURE2D(_SourceDepthTexture, loadCoord01).r;
+    float p11 = LOAD_TEXTURE2D(_SourceDepthTexture, loadCoord11).r;
+
+    if (all(dstCoord0 < (uint2)_DstSize0))
+    {
+        _DepthAtlas[sourceCoord00] = p00;
+        if (sourceCoord10.x < _SrcSize.x)
+            _DepthAtlas[sourceCoord10] = p10;
+        if (sourceCoord01.y < _SrcSize.y)
+            _DepthAtlas[sourceCoord01] = p01;
+        if (all(sourceCoord11 < _SrcSize))
+            _DepthAtlas[sourceCoord11] = p11;
+
+#if defined(ENABLE_FARTHEST_PYRAMID)
+        _DepthAtlasFarthest[sourceCoord00] = p00;
+        if (sourceCoord10.x < _SrcSize.x)
+            _DepthAtlasFarthest[sourceCoord10] = p10;
+        if (sourceCoord01.y < _SrcSize.y)
+            _DepthAtlasFarthest[sourceCoord01] = p01;
+        if (all(sourceCoord11 < _SrcSize))
+            _DepthAtlasFarthest[sourceCoord11] = p11;
+#endif
+    }
+
+    float minDepth = MIN3_DEPTH(p00, p10, MIN_DEPTH(p01, p11));
+    float maxDepth = MAX3_DEPTH(p00, p10, MAX_DEPTH(p01, p11));
+    WriteGeneratedMips(threadID, dstCoord0, minDepth, maxDepth);
+}
+
+void DepthDownsampleDualUav(uint threadID, uint3 groupID)
+{
+    uint2 dstCoord0 = groupID.xy << 3 | CoordInTileByIndex(threadID);
+    int2 readOffsetUL = (int2)dstCoord0 << 1;
+
+    int2 c00 = _SrcOffset + min(readOffsetUL + int2(0, 0), _SrcLimit);
+    int2 c10 = _SrcOffset + min(readOffsetUL + int2(1, 0), _SrcLimit);
+    int2 c01 = _SrcOffset + min(readOffsetUL + int2(0, 1), _SrcLimit);
+    int2 c11 = _SrcOffset + min(readOffsetUL + int2(1, 1), _SrcLimit);
+
+    float p00 = _DepthAtlas[c00];
+    float p10 = _DepthAtlas[c10];
+    float p01 = _DepthAtlas[c01];
+    float p11 = _DepthAtlas[c11];
+
+    float minDepth = MIN3_DEPTH(p00, p10, MIN_DEPTH(p01, p11));
+
+#if defined(ENABLE_FARTHEST_PYRAMID)
+    float f00 = _DepthAtlasFarthest[c00];
+    float f10 = _DepthAtlasFarthest[c10];
+    float f01 = _DepthAtlasFarthest[c01];
+    float f11 = _DepthAtlasFarthest[c11];
+    float maxDepth = MAX3_DEPTH(f00, f10, MAX_DEPTH(f01, f11));
+#else
+    float maxDepth = MAX3_DEPTH(p00, p10, MAX_DEPTH(p01, p11));
+#endif
+
+    WriteGeneratedMips(threadID, dstCoord0, minDepth, maxDepth);
+}
+
+[numthreads(8, 8, 1)]
+void KDepthCopyFromSource(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    DepthCopyFromSource(dispatchThreadId);
+}
+
+[numthreads(8, 8, 1)]
+void KDepthCopyFromSourceFarthest(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    DepthCopyFromSource(dispatchThreadId);
+}
+
+[numthreads(64, 1, 1)]
+void KDepthDownsampleFromSource(uint threadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    DepthDownsampleFromSource(threadID, groupID);
+}
+
+[numthreads(64, 1, 1)]
+void KDepthDownsampleFromSourceCheckerboard(uint threadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    DepthDownsampleFromSource(threadID, groupID);
+}
+
+[numthreads(64, 1, 1)]
+void KDepthDownsampleFromSourceFarthest(uint threadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    DepthDownsampleFromSource(threadID, groupID);
+}
+
+[numthreads(64, 1, 1)]
+void KDepthDownsampleDualUav(uint threadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    DepthDownsampleDualUav(threadID, groupID);
+}
+
+[numthreads(64, 1, 1)]
+void KDepthDownsampleDualUavCheckerboard(uint threadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    DepthDownsampleDualUav(threadID, groupID);
+}
+
+[numthreads(64, 1, 1)]
+void KDepthDownsampleDualUavFarthest(uint threadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    DepthDownsampleDualUav(threadID, groupID);
+}

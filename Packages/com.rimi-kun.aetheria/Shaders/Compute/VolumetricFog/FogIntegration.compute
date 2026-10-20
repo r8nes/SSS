@@ -1,0 +1,890 @@
+#pragma kernel IntegrateFogGlobalOnly
+#pragma kernel IntegrateFogEmptyTiles MEDIA_DISPATCH_LIST LOCAL_MEDIA_SHAPE
+#pragma kernel IntegrateFogLocalMedia MEDIA_DISPATCH_LIST LOCAL_MEDIA LOCAL_MEDIA_SHAPE
+#pragma kernel IntegrateFogTexturedLocalMedia MEDIA_DISPATCH_LIST LOCAL_MEDIA
+#pragma target 5.0
+
+#include "../../../Runtime/Data/ShaderConfigs/VolumetricShaderConfig.cs.hlsl"
+#include "../../../ShaderLibrary/Fog/Volumetrics/VolumetricFroxel.hlsl"
+#include "../../../ShaderLibrary/Fog/Volumetrics/VolumetricDepth.hlsl"
+#include "../../../ShaderLibrary/Fog/Volumetrics/VolumetricVBuffer.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/VolumeRendering.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Hashes.hlsl"
+
+RWTexture3D<float4> _VolumetricIntegratedFogTextureRW;
+Texture2D<float> _VolumetricFarthestDepthPyramidTexture;
+float4 _VolumetricFarthestDepthMipParams;
+int _VolumetricFarthestDepthDilationWidth;
+float4 _VolumetricAmbientProbeL0;
+StructuredBuffer<float> _VolumetricPreviousAmbientProbeRawBuffer;
+StructuredBuffer<float> _VolumetricTargetAmbientProbeRawBuffer;
+float _VolumetricAmbientProbeBlendFactor;
+int _VolumetricUseGpuAmbientProbe;
+StructuredBuffer<uint> _VolumetricMediaDispatchTileBuffer;
+uint _VolumetricMediaDispatchTileOffset;
+float4 _VolumetricMediaTileGridParams;
+
+#if defined(LOCAL_MEDIA)
+struct VolumetricMediaTileData
+{
+    uint volumeMaskLow;
+    uint volumeMaskHigh;
+    uint fogMaskLow;
+    uint fogMaskHigh;
+};
+
+ByteAddressBuffer _VolumetricMediaTileBuffer;
+
+VolumetricMediaTileData LoadMediaTile(uint3 coord)
+{
+    uint tileX = coord.x / VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_XY;
+    uint tileY = coord.y / VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_XY;
+    uint tileZ = coord.z / VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_Z;
+    uint tileIndex = tileX +
+        tileY * (uint)_VolumetricMediaTileGridParams.x +
+        tileZ * (uint)_VolumetricMediaTileGridParams.w;
+    uint address = tileIndex * 24u;
+    VolumetricMediaTileData tile = (VolumetricMediaTileData)0;
+    tile.volumeMaskLow = _VolumetricMediaTileBuffer.Load(address);
+    tile.volumeMaskHigh = _VolumetricMediaTileBuffer.Load(address + 4u);
+    tile.fogMaskLow = _VolumetricMediaTileBuffer.Load(address + 8u);
+    tile.fogMaskHigh = _VolumetricMediaTileBuffer.Load(address + 12u);
+    return tile;
+}
+
+bool HasLocalMedia(VolumetricMediaTileData tile)
+{
+    return (tile.volumeMaskLow | tile.volumeMaskHigh |
+            tile.fogMaskLow | tile.fogMaskHigh) != 0u;
+}
+#endif
+
+float4 EvaluateGlobalMedium(float3 worldPos, float distanceToCamera)
+{
+    float extinction = max(_VolumetricFogDensityParams.x, 0.0) *
+        max(_VolumetricFogDensityParams.y, 0.0);
+
+    if (_VolumetricFogShadowParams.w > 0.5)
+    {
+        extinction *= saturate((distanceToCamera - _VolumetricFogControlParams.x) /
+            max(_VolumetricFogControlParams.y, 1.0e-5));
+    }
+
+    if (_VolumetricFogControlParams.z > 0.5)
+    {
+        float altitude = _VolumetricPlanetUpAltitude.w +
+            dot(worldPos - _VolumetricCameraParams.xyz, _VolumetricPlanetUpAltitude.xyz);
+        float heightFromBase = altitude - _VolumetricFogLayerParams.x;
+        extinction *= exp(clamp(
+            -heightFromBase / max(_VolumetricFogLayerParams.y, 1.0e-4), -80.0, 80.0));
+    }
+
+    extinction = max(extinction, 0.0);
+    return float4(_VolumetricFogScatteringPhaseParams.rgb * extinction, extinction);
+}
+
+#if defined(LOCAL_MEDIA)
+float ComputeLocalFogCoverage(
+    float3 rayDirWS,
+    float t0,
+    float t1,
+    VolumetricVolume volume)
+{
+    float coverage = 0.0;
+    float3 localRayOrigin = TransformWorldToVolumeLocal(_VolumetricCameraParams.xyz, volume);
+    float3 localRayDir = TransformWorldVectorToVolumeLocal(rayDirWS, volume);
+    float volumeEnter = 0.0;
+    float volumeExit = 0.0;
+    bool intersects = IntersectRayAABB(
+        localRayOrigin,
+        localRayDir,
+        float3(-1.0, -1.0, -1.0),
+        float3(1.0, 1.0, 1.0),
+        0.0,
+        rcp(FLT_EPS),
+        volumeEnter,
+        volumeExit) &&
+        t1 >= volumeEnter && t0 <= volumeExit;
+    if (intersects)
+    {
+        bool crisp = volume.maskNearClampSampling.w > 0.5;
+        float overlapStart = max(t0, volumeEnter);
+        float overlapEnd = min(t1, volumeExit);
+        float sampleT = crisp ? 0.5 * (t0 + t1) : 0.5 * (overlapStart + overlapEnd);
+        coverage = VolumeMaskLocal(localRayOrigin + localRayDir * sampleT, sampleT, volume);
+        if (!crisp)
+            coverage *= saturate((overlapEnd - overlapStart) / max(t1 - t0, 1.0e-6));
+    }
+    return coverage;
+}
+
+bool IntersectFogMaskShapeRay(
+    float3 localOrigin,
+    float3 localDir,
+    VolumetricFogMaskShape mask,
+    out float tEnter,
+    out float tExit)
+{
+    tEnter = 0.0;
+    tExit = -1.0;
+    int shapeType = (int)round(mask.shapeParams.x);
+    bool intersects = false;
+    if (shapeType == 2)
+    {
+        float2 intersections = 0.0;
+        if (IntersectRaySphere(localOrigin, localDir, 1.0, intersections))
+        {
+            tEnter = intersections.x;
+            tExit = intersections.y;
+            intersects = tExit >= max(tEnter, 0.0);
+        }
+    }
+    else
+    {
+        intersects = IntersectRayAABB(
+            localOrigin,
+            localDir,
+            float3(-1.0, -1.0, -1.0),
+            float3(1.0, 1.0, 1.0),
+            0.0,
+            rcp(FLT_EPS),
+            tEnter,
+            tExit);
+    }
+    return intersects;
+}
+
+float ComputeFogMaskCoverage(
+    float3 rayDirWS,
+    float t0,
+    float t1,
+    VolumetricFogMaskShape mask)
+{
+    float coverage = 0.0;
+    float3 localRayOrigin = TransformWorldToFogMaskLocal(_VolumetricCameraParams.xyz, mask);
+    float3 localRayDir = TransformWorldVectorToFogMaskLocal(rayDirWS, mask);
+    float volumeEnter = 0.0;
+    float volumeExit = 0.0;
+    bool intersects = IntersectFogMaskShapeRay(
+        localRayOrigin,
+        localRayDir,
+        mask,
+        volumeEnter,
+        volumeExit) &&
+        t1 >= volumeEnter && t0 <= volumeExit;
+    if (intersects)
+    {
+        bool crisp = mask.halfSizeSampling.w > 0.5;
+        float overlapStart = max(t0, volumeEnter);
+        float overlapEnd = min(t1, volumeExit);
+        float sampleT = crisp ? 0.5 * (t0 + t1) : 0.5 * (overlapStart + overlapEnd);
+        coverage = EvaluateVolumetricFogMaskAtDistance(
+            localRayOrigin + localRayDir * sampleT, sampleT, mask);
+        if (!crisp)
+            coverage *= saturate((overlapEnd - overlapStart) / max(t1 - t0, 1.0e-6));
+    }
+    return coverage;
+}
+
+bool PopMediaIndex(inout uint maskLow, inout uint maskHigh, out uint index)
+{
+    index = 0u;
+    bool found = false;
+    if (maskLow != 0u)
+    {
+        index = (uint)firstbitlow(maskLow);
+        maskLow &= maskLow - 1u;
+        found = true;
+    }
+    else if (maskHigh != 0u)
+    {
+        index = 32u + (uint)firstbitlow(maskHigh);
+        maskHigh &= maskHigh - 1u;
+        found = true;
+    }
+    return found;
+}
+
+void ApplyNextLocalFog(
+    inout float4 medium,
+    inout uint maskLow,
+    inout uint maskHigh,
+    float3 rayDirWS,
+    float t0,
+    float t1)
+{
+    uint volumeIndex = 0u;
+    if (!PopMediaIndex(maskLow, maskHigh, volumeIndex))
+        return;
+
+    VolumetricVolume volume = _VolumetricVolumeBuffer[volumeIndex];
+    float coverage = ComputeLocalFogCoverage(rayDirWS, t0, t1, volume);
+    if (coverage <= 1.0e-5)
+        return;
+
+    ApplyLocalMediumBlend(
+        medium.rgb,
+        medium.a,
+        max(volume.scatteringExtinction.rgb, 0.0) * coverage,
+        max(volume.scatteringExtinction.a, 0.0) * coverage,
+        (int)round(volume.rcpNegFaceFadeBlend.w));
+}
+
+void ApplyLocalFogSet(
+    inout float4 medium,
+    uint maskLow,
+    uint maskHigh,
+    float3 rayDirWS,
+    float t0,
+    float t1)
+{
+    uint count = countbits(maskLow) + countbits(maskHigh);
+    [loop]
+    for (uint item = 0u; item < count; ++item)
+        ApplyNextLocalFog(medium, maskLow, maskHigh, rayDirWS, t0, t1);
+}
+
+void ApplyNextFogMask(
+    inout float coverage,
+    inout uint maskLow,
+    inout uint maskHigh,
+    float3 rayDirWS,
+    float t0,
+    float t1)
+{
+    uint maskIndex = 0u;
+    if (coverage >= 0.999 || !PopMediaIndex(maskLow, maskHigh, maskIndex))
+        return;
+
+    coverage = max(coverage, ComputeFogMaskCoverage(
+        rayDirWS, t0, t1, _VolumetricFogMaskBuffer[maskIndex]));
+}
+
+float EvaluateFogMaskSet(
+    float coverage,
+    uint maskLow,
+    uint maskHigh,
+    float3 rayDirWS,
+    float t0,
+    float t1)
+{
+    uint count = countbits(maskLow) + countbits(maskHigh);
+    [loop]
+    for (uint item = 0u; item < count && coverage < 0.999; ++item)
+        ApplyNextFogMask(coverage, maskLow, maskHigh, rayDirWS, t0, t1);
+    return coverage;
+}
+
+float4 EvaluateLocalMedium(
+    float4 globalMedium,
+    VolumetricMediaTileData tile,
+    float3 rayDirWS,
+    float t0,
+    float t1)
+{
+    float fogMaskCoverage = 0.0;
+    [branch]
+    if ((tile.fogMaskLow | tile.fogMaskHigh) != 0u)
+    {
+        fogMaskCoverage = EvaluateFogMaskSet(
+            0.0, tile.fogMaskLow, tile.fogMaskHigh, rayDirWS, t0, t1);
+    }
+    float4 medium = globalMedium;
+    if (fogMaskCoverage < 0.999)
+    {
+        [branch]
+        if ((tile.volumeMaskLow | tile.volumeMaskHigh) != 0u)
+        {
+            ApplyLocalFogSet(
+                medium, tile.volumeMaskLow, tile.volumeMaskHigh, rayDirWS, t0, t1);
+        }
+        medium *= 1.0 - saturate(fogMaskCoverage);
+    }
+    else
+    {
+        medium = 0.0;
+    }
+    return max(medium, 0.0);
+}
+#endif
+
+float ReceiveShadowTransmittance(float3 worldPos)
+{
+    float transmittance = 1.0;
+    if (_VolumetricFogLightingParams.z > 0.5 && _VolumetricFogLightingParams.w > 0.5)
+    {
+        uint cascadeIndex = (uint)ComputeCascadeIndex(worldPos);
+        if (cascadeIndex < MAX_SHADOW_CASCADES)
+        {
+            float3 shadowCoord = mul(
+                _MainLightWorldToShadow[cascadeIndex],
+                float4(worldPos, 1.0)).xyz;
+            bool validShadowCoord =
+                shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 &&
+                shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0 &&
+                shadowCoord.z > 0.0 && shadowCoord.z < 1.0;
+
+            if (validShadowCoord)
+            {
+                uint2 shadowSize = (uint2)max(_MainLightShadowmapSize.zw, 1.0);
+                uint2 shadowTexel = min(
+                    (uint2)(saturate(shadowCoord.xy) * shadowSize),
+                    shadowSize - 1u);
+                float shadowDepth = LOAD_TEXTURE2D(
+                    _MainLightShadowmapTexture, shadowTexel).r;
+
+#if UNITY_REVERSED_Z
+                half shadow = shadowCoord.z >= shadowDepth ? 1.0h : 0.0h;
+#else
+                half shadow = shadowCoord.z <= shadowDepth ? 1.0h : 0.0h;
+#endif
+                shadow = LerpWhiteTo(shadow, _MainLightShadowParams.x);
+                transmittance = LerpWhiteTo(shadow, _VolumetricFogLightingParams.x);
+            }
+        }
+    }
+    return transmittance;
+}
+
+float LoadBlendedAmbientProbeCoefficient(uint index, float blendFactor)
+{
+    float coefficient;
+    if (blendFactor <= 1.0e-5)
+    {
+        coefficient = _VolumetricPreviousAmbientProbeRawBuffer[index];
+    }
+    else if (blendFactor >= 0.99999)
+    {
+        coefficient = _VolumetricTargetAmbientProbeRawBuffer[index];
+    }
+    else
+    {
+        coefficient = lerp(
+            _VolumetricPreviousAmbientProbeRawBuffer[index],
+            _VolumetricTargetAmbientProbeRawBuffer[index],
+            blendFactor);
+    }
+    return coefficient;
+}
+
+float3 EvaluateFogAmbientScattering(float3 viewDirWS)
+{
+    float3 ambientScattering = _VolumetricFogAmbientLightingParams.rgb;
+    if (_VolumetricFogAmbientLightingParams.w > 0.5)
+    {
+        float probeDimmer = saturate(_VolumetricFogLightingParams.y);
+        if (_VolumetricUseGpuAmbientProbe != 0)
+        {
+            float x = viewDirWS.x;
+            float y = viewDirWS.y;
+            float z = viewDirWS.z;
+            float shL0 = 0.28209479177387814;
+            float3 shL1 = float3(
+                -0.4886025119029199 * y,
+                 0.4886025119029199 * z,
+                -0.4886025119029199 * x);
+            float3 shL2A = float3(
+                1.0925484305920792 * x * y,
+                -1.0925484305920792 * y * z,
+                0.31539156525252005 * (3.0 * z * z - 1.0));
+            float2 shL2B = float2(
+                -1.0925484305920792 * x * z,
+                0.5462742152960396 * (x * x - y * y));
+            float g = clamp(_VolumetricFogScatteringPhaseParams.w, -0.96, 0.96);
+            float g2 = g * g;
+            float3 phaseConvolution = float3(1.0, g, g2);
+
+            shL0 *= phaseConvolution.x;
+            shL1 *= phaseConvolution.y;
+            shL2A *= phaseConvolution.z;
+            shL2B *= phaseConvolution.z;
+
+            float blendFactor = saturate(_VolumetricAmbientProbeBlendFactor);
+            float3 radiance = 0.0;
+
+            [unroll]
+            for (uint channel = 0u; channel < 3u; ++channel)
+            {
+                uint offset = channel * 9u;
+                float c0 = LoadBlendedAmbientProbeCoefficient(
+                    offset, blendFactor);
+                float3 c1 = float3(
+                    LoadBlendedAmbientProbeCoefficient(offset + 1u, blendFactor),
+                    LoadBlendedAmbientProbeCoefficient(offset + 2u, blendFactor),
+                    LoadBlendedAmbientProbeCoefficient(offset + 3u, blendFactor));
+                float3 c2a = float3(
+                    LoadBlendedAmbientProbeCoefficient(offset + 4u, blendFactor),
+                    LoadBlendedAmbientProbeCoefficient(offset + 5u, blendFactor),
+                    LoadBlendedAmbientProbeCoefficient(offset + 6u, blendFactor));
+                float2 c2b = float2(
+                    LoadBlendedAmbientProbeCoefficient(offset + 7u, blendFactor),
+                    LoadBlendedAmbientProbeCoefficient(offset + 8u, blendFactor));
+
+                radiance[channel] =
+                    c0 * shL0 +
+                    dot(c1, shL1) +
+                    dot(c2a, shL2A) +
+                    dot(c2b, shL2B);
+            }
+            ambientScattering = radiance *
+                _VolumetricFogAmbientLightingParams.rgb * probeDimmer;
+        }
+        else
+        {
+            ambientScattering = _VolumetricAmbientProbeL0.rgb *
+                _VolumetricFogAmbientLightingParams.rgb * probeDimmer;
+        }
+    }
+    return ambientScattering;
+}
+
+float3 EvaluateMainDirectionalLight(float3 sampleWS)
+{
+    float3 radiance = 0.0;
+    if (_FogMainLightDirectionWS.w > 0.5 && _FogMainLightColor.a > 1.0e-5)
+    {
+        radiance = max(_FogMainLightColor.rgb, 0.0) *
+            _FogMainLightColor.a * ReceiveShadowTransmittance(sampleWS);
+    }
+    return radiance;
+}
+
+
+
+float SampleDilatedFarthestDepth(float2 uv)
+{
+    int2 mipOffset = int2(_VolumetricFarthestDepthMipParams.xy);
+    int2 mipSize = max(int2(_VolumetricFarthestDepthMipParams.zw), int2(1, 1));
+
+    int footprint = clamp(_VolumetricFarthestDepthDilationWidth + 1, 1, 3);
+    int2 center = int2(floor(uv * float2(mipSize)));
+    int2 start = center - int2(footprint >> 1, footprint >> 1);
+
+    float maxDepth = 0.0;
+    [loop]
+    for (int y = 0; y < footprint; ++y)
+    {
+        [loop]
+        for (int x = 0; x < footprint; ++x)
+        {
+            int2 localCoord = clamp(
+                start + int2(x, y),
+                int2(0, 0),
+                mipSize - int2(1, 1));
+            float rawDepth = _VolumetricFarthestDepthPyramidTexture.Load(
+                int3(mipOffset + localCoord, 0));
+            maxDepth = max(
+                maxDepth,
+                LinearizeClampedVolumetricDepth(rawDepth, _VolumetricDepthParams.y));
+        }
+    }
+
+    return maxDepth;
+}
+
+float GetMaxIntegratedOpticalDepth()
+{
+    return -log(FROXEL_TRANSMITTANCE_EPSILON);
+}
+
+float4 EncodeIntegratedFogRGBD(
+    float3 radiance,
+    float opticalDepth,
+    float transmittance)
+{
+    opticalDepth = clamp(opticalDepth, 0.0, GetMaxIntegratedOpticalDepth());
+    float opacity = 1.0 - saturate(transmittance);
+    float multiplier = opticalDepth * rcp(max(opacity, REAL_EPS));
+    multiplier = opacity >= REAL_EPS ? multiplier : 1.0;
+    return clamp(float4(
+        max(radiance, 0.0) * multiplier,
+        opticalDepth), 0.0, HALF_MAX);
+}
+
+void FillRemainingColumn(
+    uint2 xy,
+    uint firstSlice,
+    uint sliceCount,
+    float3 accumulatedRadiance,
+    float accumulatedOpticalDepth,
+    float accumulatedTransmittance)
+{
+    float4 integratedFog = EncodeIntegratedFogRGBD(
+        accumulatedRadiance,
+        accumulatedOpticalDepth,
+        accumulatedTransmittance);
+    for (uint slice = firstSlice; slice < sliceCount; ++slice)
+    {
+        uint3 coord = uint3(xy, slice);
+        _VolumetricIntegratedFogTextureRW[coord] = integratedFog;
+    }
+}
+
+void IntegrateFogSegment(
+    float3 rayDirWS,
+    float phase,
+    float3 ambientRadiance,
+#if defined(LOCAL_MEDIA)
+    VolumetricMediaTileData mediaTile,
+    bool mediaTileActive,
+#endif
+    float tStart,
+    float tEnd,
+    float randomValue,
+    inout float3 accumulatedRadiance,
+    inout float accumulatedTransmittance,
+    inout float accumulatedOpticalDepth)
+{
+    float dt = tEnd - tStart;
+    if (dt <= 1.0e-6)
+        return;
+
+    float sampleT = 0.5 * (tStart + tEnd);
+    float3 sampleWS = _VolumetricCameraParams.xyz + rayDirWS * sampleT;
+    float4 medium = EvaluateGlobalMedium(sampleWS, sampleT);
+#if defined(LOCAL_MEDIA)
+    [branch]
+    if (mediaTileActive)
+    {
+        medium = EvaluateLocalMedium(
+            medium,
+            mediaTile,
+            rayDirWS,
+            tStart,
+            tEnd);
+    }
+#endif
+
+    float extinction = medium.a;
+    float3 scattering = medium.rgb;
+    if (extinction <= 1.0e-6)
+        return;
+
+    float lightingOffset = 0.0;
+    float directLightingWeight = 0.0;
+    ImportanceSampleHomogeneousMedium(
+        frac(randomValue),
+        max(extinction, 1.0e-6),
+        dt,
+        lightingOffset,
+        directLightingWeight);
+
+    float3 lightingSampleWS = _VolumetricCameraParams.xyz +
+        rayDirWS * (tStart + lightingOffset);
+    float3 directRadianceNoPhase = EvaluateMainDirectionalLight(lightingSampleWS);
+
+    float4 voxelValue = max(float4(
+        max(directRadianceNoPhase, 0.0) * max(directLightingWeight, 0.0),
+        extinction * dt), 0.0);
+    float3 directSegmentRadiance = scattering * phase * voxelValue.rgb;
+    float3 ambientSource = scattering * ambientRadiance;
+    float sigmaT = max(extinction, FLT_MIN);
+    float3 ambientSegmentRadiance = ambientSource *
+        TransmittanceIntegralHomogeneousMedium(sigmaT, dt);
+    float3 segmentRadiance = max(
+        directSegmentRadiance + ambientSegmentRadiance,
+        0.0);
+    float opticalDepth = voxelValue.a;
+    float segmentTransmittance = TransmittanceFromOpticalDepth(opticalDepth);
+
+    accumulatedRadiance += accumulatedTransmittance * segmentRadiance;
+    accumulatedTransmittance = max(
+        accumulatedTransmittance * segmentTransmittance,
+        FROXEL_TRANSMITTANCE_EPSILON);
+    accumulatedOpticalDepth = min(
+        accumulatedOpticalDepth + opticalDepth,
+        GetMaxIntegratedOpticalDepth());
+}
+
+void IntegrateFogColumn(uint3 id)
+{
+    uint2 gridSize = (uint2)_VolumetricGridParams.xy;
+    if (any(id.xy >= gridSize))
+        return;
+
+    uint sliceCount = (uint)_VolumetricGridParams.z;
+    float2 sampleOffset = 0.0;
+    float2 voxelSizePx = _VolumetricScreenParams.xy / max(_VolumetricGridParams.xy, 1.0);
+    float2 pixelCoordF = (float2(id.xy) + 0.5 + sampleOffset) * voxelSizePx;
+    int2 pixelCoord = int2(clamp(
+        pixelCoordF, float2(0.0, 0.0), _VolumetricScreenParams.xy - 1.0));
+    float2 uv = GetFroxelUv(id.xy, float2(0.0, 0.0));
+    float3 viewForwardWS = _VolumetricViewForwardWS.xyz;
+    float3 centerRayDirWS = GetWorldRayDirectionFromFroxel(id.xy);
+    float3 sampleRayDirWS = centerRayDirWS;
+    float invCosView = rcp(max(dot(sampleRayDirWS, viewForwardWS), 1.0e-5));
+    float nearRayDistance = _VolumetricDepthParams.x * invCosView;
+    float sceneMaxDistance = min(
+        SampleDilatedFarthestDepth(uv) * invCosView, _VolumetricDepthParams.y);
+    float sceneGeometryDistance = min(
+        LoadLinearDepthAtPixel(pixelCoord) * invCosView, _VolumetricDepthParams.y);
+    float3 accumulatedRadiance = 0.0;
+    float accumulatedTransmittance = 1.0;
+    float accumulatedOpticalDepth = 0.0;
+    float3 viewDirWS = centerRayDirWS;
+    float3 ambientRadiance = EvaluateFogAmbientScattering(viewDirWS);
+    float anisotropy = clamp(
+        _VolumetricFogScatteringPhaseParams.w,
+        -MAX_VOLUMETRIC_ANISOTROPY,
+        MAX_VOLUMETRIC_ANISOTROPY);
+    float phase = IsotropicPhaseFunction();
+    if (_FogMainLightDirectionWS.w > 0.5 && _FogMainLightColor.a > 1.0e-5)
+    {
+        phase = HenyeyGreensteinPhaseFunction(
+            anisotropy,
+            dot(_FogMainLightDirectionWS.xyz, viewDirWS));
+    }
+    float randomOffset;
+    Hash_Tchou_2_1_float(float2(id.xy), randomOffset);
+#if defined(LOCAL_MEDIA)
+    VolumetricMediaTileData mediaTile = LoadMediaTile(uint3(id.xy, 0u));
+    bool mediaTileActive = HasLocalMedia(mediaTile);
+#endif
+
+    float depthExponential = 1.0f;
+    float decodedBoundary0 = min(
+        _VolumetricDepthDecodingParams.x * depthExponential
+            + _VolumetricDepthDecodingParams.z,
+        _VolumetricLastSliceDistance);
+
+    for (uint slice = 0u; slice < sliceCount; ++slice)
+    {
+        uint3 coord = uint3(id.xy, slice);
+#if defined(LOCAL_MEDIA)
+        if (slice > 0u &&
+            slice % VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_Z == 0u)
+        {
+            mediaTile = LoadMediaTile(coord);
+            mediaTileActive = HasLocalMedia(mediaTile);
+        }
+#endif
+
+        float nextDepthExponential = depthExponential * _VolumetricDepthStepParams.x;
+        float decodedBoundary1 = min(
+            _VolumetricDepthDecodingParams.x * nextDepthExponential
+                + _VolumetricDepthDecodingParams.z,
+            _VolumetricLastSliceDistance);
+        float decodedCenter = min(
+            _VolumetricDepthDecodingParams.x
+                * (depthExponential * _VolumetricDepthStepParams.y)
+                + _VolumetricDepthDecodingParams.z,
+            _VolumetricLastSliceDistance);
+
+        float nominalT0 = max(nearRayDistance, decodedBoundary0);
+        float nominalT1 = max(nearRayDistance, decodedBoundary1);
+
+        depthExponential = nextDepthExponential;
+        decodedBoundary0 = decodedBoundary1;
+
+        if (nominalT0 * 0.99 > sceneMaxDistance)
+        {
+            FillRemainingColumn(
+                id.xy,
+                slice,
+                sliceCount,
+                accumulatedRadiance,
+                accumulatedOpticalDepth,
+                accumulatedTransmittance);
+            break;
+        }
+
+        bool geometryInsideSlice =
+            sceneGeometryDistance >= nominalT0 &&
+            sceneGeometryDistance <= nominalT1;
+        float t0 = nominalT0;
+        float t1 = geometryInsideSlice
+            ? max(t0, sceneGeometryDistance)
+            : nominalT1;
+
+        if (t1 <= t0 + 1.0e-6)
+        {
+            _VolumetricIntegratedFogTextureRW[coord] =
+                EncodeIntegratedFogRGBD(
+                    accumulatedRadiance,
+                    accumulatedOpticalDepth,
+                    accumulatedTransmittance);
+            continue;
+        }
+
+        // Store the cumulative integral at the actual encoded slice center.
+        float centerEnd = min(max(decodedCenter, t0), t1);
+
+#if defined(LOCAL_MEDIA)
+        if (mediaTileActive)
+        {
+            // Local media can vary inside a slice, so integrate both halves independently.
+            IntegrateFogSegment(
+                centerRayDirWS,
+                phase,
+                ambientRadiance,
+                mediaTile,
+                true,
+                t0,
+                centerEnd,
+                randomOffset + 0.5f,
+                accumulatedRadiance,
+                accumulatedTransmittance,
+                accumulatedOpticalDepth);
+
+            _VolumetricIntegratedFogTextureRW[coord] =
+                EncodeIntegratedFogRGBD(
+                    accumulatedRadiance,
+                    accumulatedOpticalDepth,
+                    accumulatedTransmittance);
+
+            if (t1 > centerEnd + 1.0e-6)
+            {
+                IntegrateFogSegment(
+                    centerRayDirWS,
+                    phase,
+                    ambientRadiance,
+                    mediaTile,
+                    true,
+                    centerEnd,
+                    t1,
+                    randomOffset + 0.5f,
+                    accumulatedRadiance,
+                    accumulatedTransmittance,
+                    accumulatedOpticalDepth);
+            }
+        }
+        else
+#endif
+        {
+            // Global-only slices keep the fast path with the actual center fraction.
+            float dt = t1 - t0;
+            float sampleT = centerEnd;
+            float3 sampleWS = _VolumetricCameraParams.xyz + centerRayDirWS * sampleT;
+            float4 medium = EvaluateGlobalMedium(sampleWS, sampleT);
+            float extinction = medium.a;
+            float3 scattering = medium.rgb;
+
+            if (extinction <= 1.0e-6)
+            {
+                _VolumetricIntegratedFogTextureRW[coord] =
+                    EncodeIntegratedFogRGBD(
+                    accumulatedRadiance,
+                    accumulatedOpticalDepth,
+                    accumulatedTransmittance);
+            }
+            else
+            {
+                float lightingOffset = 0.0;
+                float directLightingWeight = 0.0;
+                ImportanceSampleHomogeneousMedium(
+                    frac(randomOffset + 0.5f),
+                    max(extinction, 1.0e-6),
+                    dt,
+                    lightingOffset,
+                    directLightingWeight);
+                float3 lightingSampleWS = _VolumetricCameraParams.xyz +
+                    sampleRayDirWS * (t0 + lightingOffset);
+                float3 directRadianceNoPhase = EvaluateMainDirectionalLight(lightingSampleWS);
+
+                float4 voxelValue = max(float4(
+                    max(directRadianceNoPhase, 0.0) * max(directLightingWeight, 0.0),
+                    extinction * dt), 0.0);
+                float3 directSliceRadiance = scattering * phase * voxelValue.rgb;
+                float3 ambientSource = scattering * ambientRadiance;
+                float sigmaT = max(extinction, FLT_MIN);
+                float3 ambientSliceRadiance = ambientSource *
+                    TransmittanceIntegralHomogeneousMedium(sigmaT, dt);
+                float3 sliceRadiance = max(
+                    directSliceRadiance + ambientSliceRadiance, 0.0);
+                float opticalDepth = voxelValue.a;
+                float sliceTransmittance = TransmittanceFromOpticalDepth(opticalDepth);
+
+                float centerFraction = saturate(
+                    (centerEnd - t0) * rcp(max(dt, 1.0e-6)));
+                float centerOpticalDepthInSlice = opticalDepth * centerFraction;
+                float centerTransmittance =
+                    TransmittanceFromOpticalDepth(centerOpticalDepthInSlice);
+                float directCenterRatio = opticalDepth > 1.0e-6
+                    ? saturate((1.0 - centerTransmittance) /
+                        max(1.0 - sliceTransmittance, 1.0e-6))
+                    : centerFraction;
+                float3 centerSliceRadiance =
+                    directSliceRadiance * directCenterRatio +
+                    ambientSource * TransmittanceIntegralHomogeneousMedium(
+                        sigmaT, dt * centerFraction);
+                float3 centerRadiance = accumulatedRadiance +
+                    accumulatedTransmittance * centerSliceRadiance;
+                float centerOpticalDepth = accumulatedOpticalDepth +
+                    centerOpticalDepthInSlice;
+                float centerAccumulatedTransmittance = max(
+                    accumulatedTransmittance * centerTransmittance,
+                    FROXEL_TRANSMITTANCE_EPSILON);
+
+                _VolumetricIntegratedFogTextureRW[coord] =
+                    EncodeIntegratedFogRGBD(
+                        centerRadiance,
+                        centerOpticalDepth,
+                        centerAccumulatedTransmittance);
+
+                accumulatedRadiance += accumulatedTransmittance * sliceRadiance;
+                accumulatedTransmittance = max(
+                    accumulatedTransmittance * sliceTransmittance,
+                    FROXEL_TRANSMITTANCE_EPSILON);
+                accumulatedOpticalDepth = min(
+                    accumulatedOpticalDepth + opticalDepth,
+                    GetMaxIntegratedOpticalDepth());
+            }
+        }
+
+    }
+}
+
+uint3 ResolveMediaDispatchId(uint3 groupId, uint3 groupThreadId)
+{
+    uint dispatchTile = _VolumetricMediaDispatchTileBuffer[
+        _VolumetricMediaDispatchTileOffset + groupId.x];
+    uint tileCountX = (uint)_VolumetricMediaTileGridParams.x;
+    uint2 tileCoord = uint2(dispatchTile % tileCountX, dispatchTile / tileCountX);
+    return uint3(
+        tileCoord * VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_XY + groupThreadId.xy,
+        0u);
+}
+
+
+[numthreads(
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    1)]
+void IntegrateFogGlobalOnly(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    IntegrateFogColumn(uint3(dispatchThreadId.xy, 0u));
+}
+
+[numthreads(
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    1)]
+void IntegrateFogEmptyTiles(
+    uint3 groupId : SV_GroupID,
+    uint3 groupThreadId : SV_GroupThreadID)
+{
+    IntegrateFogColumn(ResolveMediaDispatchId(groupId, groupThreadId));
+}
+
+[numthreads(
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    1)]
+void IntegrateFogLocalMedia(
+    uint3 groupId : SV_GroupID,
+    uint3 groupThreadId : SV_GroupThreadID)
+{
+    IntegrateFogColumn(ResolveMediaDispatchId(groupId, groupThreadId));
+}
+
+[numthreads(
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    VOLUMETRICSHADERCONFIG_FROXEL_THREAD_GROUP_SIZE,
+    1)]
+void IntegrateFogTexturedLocalMedia(
+    uint3 groupId : SV_GroupID,
+    uint3 groupThreadId : SV_GroupThreadID)
+{
+    IntegrateFogColumn(ResolveMediaDispatchId(groupId, groupThreadId));
+}

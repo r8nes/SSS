@@ -1,0 +1,268 @@
+#pragma kernel BuildMask
+#pragma kernel StabilizeSignal
+#pragma kernel BlurNear
+#pragma kernel BlurFar
+#pragma target 4.5
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "../../ShaderLibrary/LightShafts/LightShaftsCommon.hlsl"
+
+Texture2D<float> _Depth;
+Texture2D<float2> _Signal;
+Texture2D<float2> _HistorySignal;
+Texture2D<float> _Mask;
+
+RWTexture2D<float2> _SignalOut;
+RWTexture2D<float> _MaskOut;
+
+float4 _LightShaftsHalfSize;
+float4 _LightShaftsRadialSize;
+float4 _LightShaftsDepthSize;
+float4x4 _LightShaftsInverseViewProjection;
+float4x4 _LightShaftsNonJitteredViewProjection;
+float4x4 _LightShaftsPreviousViewProjection;
+
+float _LightShaftsOcclusionDepthRange;
+int _LightShaftsHistoryValid;
+
+static const uint RADIAL_SAMPLE_COUNT = 16u;
+static const float NEAR_BLUR_DISTANCE = 0.2;
+static const float FAR_BLUR_DISTANCE = 1.0;
+static const float MASK_CURRENT_WEIGHT = 1.0 / 16.0;
+
+uint2 HalfSize()
+{
+    return max((uint2)_LightShaftsHalfSize.xy, uint2(1, 1));
+}
+
+uint2 RadialSize()
+{
+    return max((uint2)_LightShaftsRadialSize.xy, uint2(1, 1));
+}
+
+float EdgeMask(float2 uv)
+{
+    float edge = 1.0 - uv.x * (1.0 - uv.x) * uv.y * (1.0 - uv.y) * 8.0;
+    float edge2 = edge * edge;
+    return edge2 * edge2;
+}
+
+float4 GatherDepth2x2(uint2 halfPixel)
+{
+    uint2 sourceBase = halfPixel * 2u;
+    float2 gatherUv = (float2(sourceBase) + 1.0) * _LightShaftsDepthSize.zw;
+    return _Depth.GatherRed(sampler_PointClamp, gatherUv);
+}
+
+float NearestRawDepth(float4 depths)
+{
+#if UNITY_REVERSED_Z
+    return max(max(depths.x, depths.y), max(depths.z, depths.w));
+#else
+    return min(min(depths.x, depths.y), min(depths.z, depths.w));
+#endif
+}
+
+float FarthestRawDepth(float4 depths)
+{
+#if UNITY_REVERSED_Z
+    return min(min(depths.x, depths.y), min(depths.z, depths.w));
+#else
+    return max(max(depths.x, depths.y), max(depths.z, depths.w));
+#endif
+}
+
+float GeometryCoverage(float4 depths)
+{
+    float coverage = 0.0;
+    coverage += IsFarDepth(depths.x) ? 0.0 : 1.0;
+    coverage += IsFarDepth(depths.y) ? 0.0 : 1.0;
+    coverage += IsFarDepth(depths.z) ? 0.0 : 1.0;
+    coverage += IsFarDepth(depths.w) ? 0.0 : 1.0;
+    return coverage * 0.25;
+}
+
+float2 BuildHalfDepthSample(uint2 halfPixel)
+{
+    float4 depths = GatherDepth2x2(halfPixel);
+    float nearestRawDepth = NearestRawDepth(depths);
+    float nearDepth = NormalizeRawDepth(nearestRawDepth, _LightShaftsOcclusionDepthRange);
+    float farDepth = NormalizeRawDepth(FarthestRawDepth(depths), _LightShaftsOcclusionDepthRange);
+    float coverage = GeometryCoverage(depths);
+    float coverageMask = lerp(1.0, nearDepth, coverage);
+    float geometryMask = (nearDepth + farDepth) * 0.5;
+    float mask = coverage < 0.999 ? coverageMask : geometryMask;
+
+    return float2(mask, nearestRawDepth);
+}
+
+float ResolveHalfMask(uint2 halfPixel, float maskValue)
+{
+    uint2 halfSize = HalfSize();
+    uint2 clampedPixel = min(halfPixel, halfSize - 1u);
+    float2 uv = (float2(clampedPixel) + 0.5) * _LightShaftsHalfSize.zw;
+    return max(maskValue, EdgeMask(uv));
+}
+
+float LoadSignalMaskClamped(int2 pixel, uint2 size)
+{
+    int2 maxPixel = int2(size) - 1;
+    return _Signal.Load(int3(clamp(pixel, int2(0, 0), maxPixel), 0)).x;
+}
+
+#define LIGHT_SHAFTS_DEFINE_RADIAL_FILTER(functionName, sourceTexture) \
+float functionName(float2 uv, float distance) \
+{ \
+    float2 toSun = GetMainLightUv() - uv; \
+    float filtered = 0.0; \
+    [unroll] \
+    for (uint sampleIndex = 0u; sampleIndex < RADIAL_SAMPLE_COUNT; ++sampleIndex) \
+    { \
+        float sampleT = (float)sampleIndex * (1.0 / (float)RADIAL_SAMPLE_COUNT); \
+        float2 sampleUv = uv + toSun * (distance * sampleT); \
+        filtered += sourceTexture.SampleLevel(sampler_LinearClamp, sampleUv, 0.0).x; \
+    } \
+    return filtered * (1.0 / (float)RADIAL_SAMPLE_COUNT); \
+}
+
+LIGHT_SHAFTS_DEFINE_RADIAL_FILTER(RadialFilterSignal, _Signal)
+LIGHT_SHAFTS_DEFINE_RADIAL_FILTER(RadialFilterMask, _Mask)
+
+#undef LIGHT_SHAFTS_DEFINE_RADIAL_FILTER
+
+bool TryComputeHistoryUv(float2 uv, float rawDepth, out float2 historyUv)
+{
+#if !UNITY_REVERSED_Z
+    float deviceDepth = lerp(UNITY_NEAR_CLIP_VALUE, 1.0, rawDepth);
+#else
+    float deviceDepth = rawDepth;
+#endif
+
+    float3 positionWS = ComputeWorldSpacePosition(uv, deviceDepth, _LightShaftsInverseViewProjection);
+    float4 currentClip = mul(_LightShaftsNonJitteredViewProjection, float4(positionWS, 1.0));
+    float4 previousClip = mul(_LightShaftsPreviousViewProjection, float4(positionWS, 1.0));
+
+    historyUv = uv;
+    bool valid = abs(currentClip.w) > 1.0e-6 && abs(previousClip.w) > 1.0e-6;
+    if (valid)
+    {
+        float2 currentNdc = currentClip.xy / currentClip.w;
+        float2 previousNdc = previousClip.xy / previousClip.w;
+        float2 velocity = (currentNdc - previousNdc) * 0.5;
+
+#if UNITY_UV_STARTS_AT_TOP
+        velocity.y = -velocity.y;
+#endif
+
+        historyUv = uv - velocity;
+        valid = all(historyUv >= 0.0) && all(historyUv <= 1.0);
+    }
+
+    return valid;
+}
+
+[numthreads(8, 8, 1)]
+void BuildMask(uint3 dispatchId : SV_DispatchThreadID)
+{
+    uint2 radialSize = RadialSize();
+
+    if (dispatchId.x >= radialSize.x || dispatchId.y >= radialSize.y)
+        return;
+
+    uint2 halfBase = dispatchId.xy * 2u;
+
+    float2 sample00 = BuildHalfDepthSample(halfBase);
+    float2 sample10 = BuildHalfDepthSample(halfBase + uint2(1u, 0u));
+    float2 sample01 = BuildHalfDepthSample(halfBase + uint2(0u, 1u));
+    float2 sample11 = BuildHalfDepthSample(halfBase + uint2(1u, 1u));
+
+    float mask00 = ResolveHalfMask(halfBase, sample00.x);
+    float mask10 = ResolveHalfMask(halfBase + uint2(1u, 0u), sample10.x);
+    float mask01 = ResolveHalfMask(halfBase + uint2(0u, 1u), sample01.x);
+    float mask11 = ResolveHalfMask(halfBase + uint2(1u, 1u), sample11.x);
+
+    float radialMask = (mask00 + mask10 + mask01 + mask11) * 0.25;
+    float representativeRawDepth = NearestRawDepth(float4(sample00.y, sample10.y, sample01.y, sample11.y));
+
+    _SignalOut[dispatchId.xy] = float2(radialMask, representativeRawDepth);
+}
+
+[numthreads(8, 8, 1)]
+void StabilizeSignal(uint3 dispatchId : SV_DispatchThreadID)
+{
+    uint2 radialSize = RadialSize();
+    uint2 pixel = dispatchId.xy;
+
+    if (any(pixel >= radialSize))
+        return;
+
+    int2 p = int2(pixel);
+    float2 currentSignal = _Signal.Load(int3(pixel, 0));
+    float current = currentSignal.x;
+
+    if (_LightShaftsHistoryValid == 0)
+    {
+        _SignalOut[pixel] = currentSignal;
+        return;
+    }
+
+    float left = LoadSignalMaskClamped(p + int2(-1, 0), radialSize);
+    float right = LoadSignalMaskClamped(p + int2(1, 0), radialSize);
+    float down = LoadSignalMaskClamped(p + int2(0, -1), radialSize);
+    float up = LoadSignalMaskClamped(p + int2(0, 1), radialSize);
+
+    float neighborhoodMin = min(current, min(min(left, right), min(down, up)));
+    float neighborhoodMax = max(current, max(max(left, right), max(down, up)));
+    float filteredCurrent = current * 0.5 + (left + right + down + up) * 0.125;
+
+    float2 uv = (float2(pixel) + 0.5) * _LightShaftsRadialSize.zw;
+    float2 historyUv;
+
+    if (!TryComputeHistoryUv(uv, currentSignal.y, historyUv))
+    {
+        _SignalOut[pixel] = currentSignal;
+        return;
+    }
+
+    float historyMask = _HistorySignal.SampleLevel(sampler_LinearClamp, historyUv, 0.0).x;
+    float historyRawDepth = _HistorySignal.SampleLevel(sampler_PointClamp, historyUv, 0.0).y;
+
+    historyMask = clamp(historyMask, neighborhoodMin, neighborhoodMax);
+
+    float currentDepth = NormalizeRawDepth(currentSignal.y, _LightShaftsOcclusionDepthRange);
+    float historyDepth = NormalizeRawDepth(historyRawDepth, _LightShaftsOcclusionDepthRange);
+    float depthThreshold = max(0.5 / max(_LightShaftsOcclusionDepthRange, 1.0e-4), currentDepth * 0.02);
+
+    if (abs(currentDepth - historyDepth) > depthThreshold)
+    {
+        _SignalOut[pixel] = currentSignal;
+        return;
+    }
+
+    float stabilizedMask = lerp(historyMask, filteredCurrent, MASK_CURRENT_WEIGHT);
+    _SignalOut[pixel] = float2(stabilizedMask, currentSignal.y);
+}
+
+[numthreads(8, 8, 1)]
+void BlurNear(uint3 dispatchId : SV_DispatchThreadID)
+{
+    uint2 radialSize = RadialSize();
+
+    if (dispatchId.x >= radialSize.x || dispatchId.y >= radialSize.y)
+        return;
+
+    float2 uv = (float2(dispatchId.xy) + 0.5) * _LightShaftsRadialSize.zw;
+    _MaskOut[dispatchId.xy] = RadialFilterSignal(uv, NEAR_BLUR_DISTANCE);
+}
+
+[numthreads(8, 8, 1)]
+void BlurFar(uint3 dispatchId : SV_DispatchThreadID)
+{
+    uint2 radialSize = RadialSize();
+
+    if (dispatchId.x >= radialSize.x || dispatchId.y >= radialSize.y)
+        return;
+
+    float2 uv = (float2(dispatchId.xy) + 0.5) * _LightShaftsRadialSize.zw;
+    _MaskOut[dispatchId.xy] = RadialFilterMask(uv, FAR_BLUR_DISTANCE);
+}

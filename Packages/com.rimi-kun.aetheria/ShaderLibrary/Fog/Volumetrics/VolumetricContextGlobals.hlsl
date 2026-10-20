@@ -1,0 +1,39 @@
+#ifndef AETHERIA_VOLUMETRIC_CONTEXT_GLOBALS_INCLUDED
+#define AETHERIA_VOLUMETRIC_CONTEXT_GLOBALS_INCLUDED
+
+CBUFFER_START(VolumetricContextParams)
+float4 _VolumetricGridParams;
+float4 _VolumetricDepthParams;
+float4 _VolumetricDepthEncodingParams;
+float4 _VolumetricDepthDecodingParams;
+float4 _VolumetricDepthStepParams;
+float _VolumetricLastSliceDistance;
+float4 _VolumetricScreenParams;
+float4 _VolumetricVBufferViewportSize;
+float4 _VolumetricCameraParams;
+float4 _VolumetricViewDirOriginWS;
+float4 _VolumetricViewDirStepXWS;
+float4 _VolumetricViewDirStepYWS;
+float4 _VolumetricViewForwardWS;
+float4 _VolumetricPlanetUpAltitude;
+float4 _VolumetricFogDensityParams;
+float4 _VolumetricFogLayerParams;
+float4 _VolumetricFogScatteringPhaseParams;
+float4 _VolumetricFogLightingParams;
+float4 _VolumetricFogAmbientLightingParams;
+float4 _VolumetricFogShadowParams;
+float4 _VolumetricFogControlParams;
+float _VolumetricUseBiquadraticReconstruction;
+float4 _FogMainLightDirectionWS;
+float4 _FogMainLightColor;
+float4 _VolumetricVolumeMaskAtlasParams;
+float4 _VolumetricVolumeMaskAtlasParams1;
+float4 _VolumetricVolumeMaskAtlasParams2;
+float4 _VolumetricVolumeMaskAtlasParams3;
+float4 _VolumetricFogMaskAtlasParams;
+float4 _VolumetricFogMaskAtlasParams1;
+float4 _VolumetricFogMaskAtlasParams2;
+float4 _VolumetricFogMaskAtlasParams3;
+CBUFFER_END
+
+#endif

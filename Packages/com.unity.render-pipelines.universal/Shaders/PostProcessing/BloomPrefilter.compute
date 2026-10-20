@@ -1,0 +1,199 @@
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2 webgpu
+#pragma kernel KMainLowQuality LOW_QUALITY
+#pragma kernel KMainLowQualityNoThreshold LOW_QUALITY NO_THRESHOLD
+#pragma kernel KMainLowQualityPanini LOW_QUALITY PANINI
+#pragma kernel KMainLowQualityPaniniNoThreshold LOW_QUALITY PANINI NO_THRESHOLD
+#pragma kernel KMainLowQualityAlpha LOW_QUALITY ENABLE_ALPHA
+#pragma kernel KMainLowQualityAlphaNoThreshold LOW_QUALITY ENABLE_ALPHA NO_THRESHOLD
+#pragma kernel KMainLowQualityAlphaPanini LOW_QUALITY ENABLE_ALPHA PANINI
+#pragma kernel KMainLowQualityAlphaPaniniNoThreshold LOW_QUALITY ENABLE_ALPHA PANINI NO_THRESHOLD
+#pragma kernel KMainHighQuality HIGH_QUALITY
+#pragma kernel KMainHighQualityNoThreshold HIGH_QUALITY NO_THRESHOLD
+#pragma kernel KMainHighQualityPanini HIGH_QUALITY PANINI
+#pragma kernel KMainHighQualityPaniniNoThreshold HIGH_QUALITY PANINI NO_THRESHOLD
+#pragma kernel KMainHighQualityAlpha HIGH_QUALITY ENABLE_ALPHA
+#pragma kernel KMainHighQualityAlphaNoThreshold HIGH_QUALITY ENABLE_ALPHA NO_THRESHOLD
+#pragma kernel KMainHighQualityAlphaPanini HIGH_QUALITY ENABLE_ALPHA PANINI
+#pragma kernel KMainHighQualityAlphaPaniniNoThreshold HIGH_QUALITY ENABLE_ALPHA PANINI NO_THRESHOLD
+
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/Shaders/PostProcessing/BloomCommon.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/Shaders/PostProcessing/PaniniProjection.hlsl"
+
+Texture2D<float4> _InputTexture;
+SamplerState sampler_LinearClamp;
+RWTexture2D<float4> _OutputTexture;
+
+CBUFFER_START(cb0)
+    float4 _TexelSize;
+    float4 _SourceSize;
+    float4 _BloomThreshold;
+    float4 _PaniniParams;
+    float4 _Params;
+CBUFFER_END
+
+#define PrefilterSpread _Params.x
+#define GROUP_SIZE 8
+
+float2 ClampSourceUV(float2 uv)
+{
+    return clamp(uv, _SourceSize.zw * 0.5, 1.0 - _SourceSize.zw * 0.5);
+}
+
+void BuildBloomColumn(float u, out float2 column)
+{
+    float clampedU = clamp(u, _SourceSize.z * 0.5, 1.0 - _SourceSize.z * 0.5);
+#if defined(PANINI)
+    BuildPaniniProjectionColumn(clampedU, _PaniniParams, 1.0, column);
+#else
+    column = float2(clampedU, 1.0);
+#endif
+}
+
+float3 BloomSample(float2 column, float v, out float weight)
+{
+    float clampedV = clamp(v, _SourceSize.w * 0.5, 1.0 - _SourceSize.w * 0.5);
+    float2 sourceUv = ApplyPaniniProjectionColumn(column, clampedV);
+    float4 color = _InputTexture.SampleLevel(sampler_LinearClamp, ClampSourceUV(sourceUv), 0.0);
+#if defined(ENABLE_ALPHA)
+    color.rgb *= saturate(color.a);
+#endif
+#if !defined(NO_THRESHOLD)
+    color.rgb = QuadraticThreshold(color.rgb, _BloomThreshold.x, _BloomThreshold.yzw);
+#endif
+    weight = rcp(Luminance(color.rgb) + 1.0);
+    return (float3)color.rgb;
+}
+
+float3 PartialAverage(float3 c0, float3 c1, float3 c2, float3 c3, float w0, float w1, float w2, float w3)
+{
+    float invWeight = rcp(max(w0 + w1 + w2 + w3, 1e-6));
+    return (c0 * w0 + c1 * w1 + c2 * w2 + c3 * w3) * invWeight;
+}
+
+float3 EvaluateBloomPrefilter(float2 uv, float2 filterStep)
+{
+#if defined(LOW_QUALITY)
+    const float2 kTaps[5] =
+    {
+        float2( 0.0,  0.0),
+        float2( 0.9, -0.4),
+        float2(-0.9,  0.4),
+        float2( 0.4,  0.9),
+        float2(-0.4, -0.9)
+    };
+
+    float2 col0, col1, col2, col3, col4;
+    BuildBloomColumn(uv.x + kTaps[0].x * filterStep.x, col0);
+    BuildBloomColumn(uv.x + kTaps[1].x * filterStep.x, col1);
+    BuildBloomColumn(uv.x + kTaps[2].x * filterStep.x, col2);
+    BuildBloomColumn(uv.x + kTaps[3].x * filterStep.x, col3);
+    BuildBloomColumn(uv.x + kTaps[4].x * filterStep.x, col4);
+
+    float w0, w1, w2, w3, w4;
+    float3 color0 = BloomSample(col0, uv.y + kTaps[0].y * filterStep.y, w0);
+    float3 color1 = BloomSample(col1, uv.y + kTaps[1].y * filterStep.y, w1);
+    float3 color2 = BloomSample(col2, uv.y + kTaps[2].y * filterStep.y, w2);
+    float3 color3 = BloomSample(col3, uv.y + kTaps[3].y * filterStep.y, w3);
+    float3 color4 = BloomSample(col4, uv.y + kTaps[4].y * filterStep.y, w4);
+
+    float invWeight = rcp(max(w0 + w1 + w2 + w3 + w4, 1e-6));
+    return (color0 * w0 + color1 * w1 + color2 * w2 + color3 * w3 + color4 * w4) * invWeight;
+#else
+    float2 colNeg1, colZero, colPos1, colNegHalf, colPosHalf;
+    BuildBloomColumn(uv.x - filterStep.x, colNeg1);
+    BuildBloomColumn(uv.x, colZero);
+    BuildBloomColumn(uv.x + filterStep.x, colPos1);
+    BuildBloomColumn(uv.x - 0.5 * filterStep.x, colNegHalf);
+    BuildBloomColumn(uv.x + 0.5 * filterStep.x, colPosHalf);
+
+    float yNeg1 = uv.y - filterStep.y;
+    float yZero = uv.y;
+    float yPos1 = uv.y + filterStep.y;
+    float yNegHalf = uv.y - 0.5 * filterStep.y;
+    float yPosHalf = uv.y + 0.5 * filterStep.y;
+
+    float wA, wB, wC, wD, wE, wF, wG, wH, wI, wJ, wK, wL, wM;
+    float3 A = BloomSample(colNeg1, yNeg1, wA);
+    float3 B = BloomSample(colZero, yNeg1, wB);
+    float3 C = BloomSample(colPos1, yNeg1, wC);
+    float3 D = BloomSample(colNegHalf, yNegHalf, wD);
+    float3 E = BloomSample(colPosHalf, yNegHalf, wE);
+    float3 F = BloomSample(colNeg1, yZero, wF);
+    float3 G = BloomSample(colZero, yZero, wG);
+    float3 H = BloomSample(colPos1, yZero, wH);
+    float3 I = BloomSample(colNegHalf, yPosHalf, wI);
+    float3 J = BloomSample(colPosHalf, yPosHalf, wJ);
+    float3 K = BloomSample(colNeg1, yPos1, wK);
+    float3 L = BloomSample(colZero, yPos1, wL);
+    float3 M = BloomSample(colPos1, yPos1, wM);
+
+    float3 output = (float3)0.0;
+    output += PartialAverage(D, E, I, J, wD, wE, wI, wJ) * (float)0.5;
+    output += PartialAverage(A, B, F, G, wA, wB, wF, wG) * (float)0.125;
+    output += PartialAverage(B, C, G, H, wB, wC, wG, wH) * (float)0.125;
+    output += PartialAverage(F, G, K, L, wF, wG, wK, wL) * (float)0.125;
+    output += PartialAverage(G, H, L, M, wG, wH, wL, wM) * (float)0.125;
+    return output;
+#endif
+}
+
+void BloomPrefilterMain(uint3 dispatchThreadId)
+{
+    if (any(dispatchThreadId.xy >= uint2(_TexelSize.xy)))
+        return;
+
+    float2 uv = (float2(dispatchThreadId.xy) + 0.5) * _TexelSize.zw;
+    float3 output = EvaluateBloomPrefilter(uv, _SourceSize.zw * PrefilterSpread);
+    _OutputTexture[dispatchThreadId.xy] = float4(output, 1.0);
+}
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQuality(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQualityNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQualityPanini(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQualityPaniniNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQualityAlpha(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQualityAlphaNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQualityAlphaPanini(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainLowQualityAlphaPaniniNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQuality(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQualityNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQualityPanini(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQualityPaniniNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQualityAlpha(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQualityAlphaNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQualityAlphaPanini(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }
+
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void KMainHighQualityAlphaPaniniNoThreshold(uint3 id : SV_DispatchThreadID) { BloomPrefilterMain(id); }

@@ -1,0 +1,38 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 770a8a4696b7487583e3ad6b7a801794, type: 3}
+  m_Name: ReflectionQuality
+  m_EditorClassIdentifier: 
+  _id:
+    _a: 3452512
+    _b: -1252700387
+    _c: -1312836371
+    _d: 968445500
+  _displayName: Reflection Quality
+  _category: Reflections
+  _tiers:
+  - Id:
+      _a: -1958761329
+      _b: -1515371987
+      _c: -2055695216
+      _d: 41019480
+    DisplayName: Low
+    RealtimeUpdates: 0
+    ProbeResolution: 1
+  - Id:
+      _a: -1019784889
+      _b: -2063905881
+      _c: -1856310035
+      _d: -399157937
+    DisplayName: High
+    RealtimeUpdates: 0
+    ProbeResolution: 0

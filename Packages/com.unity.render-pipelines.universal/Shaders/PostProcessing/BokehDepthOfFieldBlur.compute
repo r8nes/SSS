@@ -1,0 +1,320 @@
+#pragma target 4.5
+#pragma kernel KBokehPrefilterClassify
+#pragma kernel KBokehPrefilterClassifyFast _USE_FAST_SRGB_LINEAR_CONVERSION
+#pragma kernel KBokehBlur
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+
+// The blur radius is capped to seven half-resolution pixels. 8x8 tiles therefore
+// guarantee that every sample affecting a workgroup lies in its 1-ring tile neighborhood.
+#define BOKEH_GROUP_SIZE 8
+#define BOKEH_GROUP_THREADS (BOKEH_GROUP_SIZE * BOKEH_GROUP_SIZE)
+#define SAMPLE_COUNT 42
+
+Texture2D<float4> _SourceColorTexture;
+Texture2D<float4> _InputTexture;
+Texture2D<float2> _TileTexture;
+RWTexture2D<float2> _TileOutputTexture;
+RWTexture2D<float4> _PrefilterOutputTexture;
+RWTexture2D<float4> _OutputTexture;
+
+float4 _SourceSize;                // xy: half-res dimensions, zw: reciprocal dimensions
+float4 _FullSourceSize;            // xy: full-res dimensions, zw: reciprocal dimensions
+float4 _CoCParams;                 // x: focus distance, y: max CoC, z: max radius, w: reciprocal aspect
+float4 _BokehKernel[SAMPLE_COUNT]; // xy/z/w match the raster implementation
+float4 _BokehConstants;            // x: near cutoff, y: feather margin
+float4 _BokehRingMin;              // xyz: minimum kernel radius for rings 1..3
+
+groupshared float2 s_CocRange[BOKEH_GROUP_THREADS];
+groupshared float2 s_DilatedRange;
+
+float SampleSceneDepthCompute(float2 uv)
+{
+    float2 depthUV = ClampAndScaleUVForBilinear(
+        UnityStereoTransformScreenSpaceTex(uv), _CameraDepthTexture_TexelSize.xy);
+    return SAMPLE_TEXTURE2D_X_LOD(_CameraDepthTexture, sampler_PointClamp, depthUV, 0.0).r;
+}
+
+float ComputeSignedCoC(float2 uv)
+{
+    float depth = SampleSceneDepthCompute(uv);
+    float linearEyeDepth = LinearEyeDepth(depth, _ZBufferParams);
+    float coc = (1.0 - _CoCParams.x / max(linearEyeDepth, 1e-5)) * _CoCParams.y;
+    return clamp(coc, -1.0, 1.0);
+}
+
+half3 SampleSourceColor(float2 uv)
+{
+    float2 sourceUV = ClampAndScaleUVForBilinear(uv, _FullSourceSize.zw);
+    return (half3)_SourceColorTexture.SampleLevel(sampler_LinearClamp, sourceUV, 0.0).xyz;
+}
+
+float4 PrefilterPixel(uint2 pixel)
+{
+    float2 uv = (float2(pixel) + 0.5) * _SourceSize.zw;
+    float2 halfSourceTexel = _FullSourceSize.zw * 0.5;
+
+    float2 uv0 = uv + float2(-halfSourceTexel.x, -halfSourceTexel.y);
+    float2 uv1 = uv + float2( halfSourceTexel.x, -halfSourceTexel.y);
+    float2 uv2 = uv + float2(-halfSourceTexel.x,  halfSourceTexel.y);
+    float2 uv3 = uv + float2( halfSourceTexel.x,  halfSourceTexel.y);
+
+    half3 c0 = SampleSourceColor(uv0);
+    half3 c1 = SampleSourceColor(uv1);
+    half3 c2 = SampleSourceColor(uv2);
+    half3 c3 = SampleSourceColor(uv3);
+
+    float coc0 = ComputeSignedCoC(uv0);
+    float coc1 = ComputeSignedCoC(uv1);
+    float coc2 = ComputeSignedCoC(uv2);
+    float coc3 = ComputeSignedCoC(uv3);
+
+    half3 avg = (c0 + c1 + c2 + c3) * (half)0.25;
+    float cocMin = min(coc0, min(coc1, min(coc2, coc3)));
+    float cocMax = max(coc0, max(coc1, max(coc2, coc3)));
+    float coc = (-cocMin > cocMax ? cocMin : cocMax) * _CoCParams.z;
+
+    avg *= (half)smoothstep(0.0, _FullSourceSize.w * 2.0, abs(coc));
+#if defined(UNITY_COLORSPACE_GAMMA)
+    avg = GetSRGBToLinear(avg);
+#endif
+    return float4((float3)avg, coc);
+}
+
+void BokehPrefilterClassify(uint3 dispatchThreadId, uint3 groupId, uint groupIndex)
+{
+    uint2 pixel = dispatchThreadId.xy;
+    uint2 size = uint2(_SourceSize.xy);
+    bool valid = all(pixel < size);
+
+    float coc = 0.0;
+    if (valid)
+    {
+        float4 filtered = PrefilterPixel(pixel);
+        half storedCoc = (half)filtered.a;
+        filtered.a = (float)storedCoc;
+        coc = (float)storedCoc;
+        _PrefilterOutputTexture[pixel] = filtered;
+    }
+
+    // Keep true signed min/max. Invalid lanes use neutral reduction sentinels so edge
+    // workgroups do not artificially enlarge the blur range with a zero-CoC sample.
+    s_CocRange[groupIndex] = valid
+        ? float2(coc, coc)
+        : float2(3.402823466e+38, -3.402823466e+38);
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = BOKEH_GROUP_THREADS >> 1; stride > 0u; stride >>= 1u)
+    {
+        if (groupIndex < stride)
+        {
+            float2 a = s_CocRange[groupIndex];
+            float2 b = s_CocRange[groupIndex + stride];
+            s_CocRange[groupIndex] = float2(min(a.x, b.x), max(a.y, b.y));
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (groupIndex == 0u)
+        _TileOutputTexture[groupId.xy] = s_CocRange[0];
+}
+
+[numthreads(BOKEH_GROUP_SIZE, BOKEH_GROUP_SIZE, 1)]
+void KBokehPrefilterClassify(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uint3 groupId : SV_GroupID,
+    uint groupIndex : SV_GroupIndex)
+{
+    BokehPrefilterClassify(dispatchThreadId, groupId, groupIndex);
+}
+
+[numthreads(BOKEH_GROUP_SIZE, BOKEH_GROUP_SIZE, 1)]
+void KBokehPrefilterClassifyFast(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uint3 groupId : SV_GroupID,
+    uint groupIndex : SV_GroupIndex)
+{
+    BokehPrefilterClassify(dispatchThreadId, groupId, groupIndex);
+}
+
+void LoadDilatedTileRange(uint2 groupId, uint groupIndex)
+{
+    if (groupIndex == 0u)
+    {
+        uint tileWidth;
+        uint tileHeight;
+        _TileTexture.GetDimensions(tileWidth, tileHeight);
+
+        int2 tileSize = max(int2(tileWidth, tileHeight), int2(1, 1));
+        int2 center = int2(groupId);
+        float2 range = float2(3.402823466e+38, -3.402823466e+38);
+
+        // Radius <= 7 half-res pixels and tile extent is 8x8, so a 1-ring gather is
+        // a conservative complete dilation. It is also workgroup-uniform and costs only
+        // nine tiny tile-range reads per 64 output pixels.
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        {
+            [unroll]
+            for (int x = -1; x <= 1; ++x)
+            {
+                int2 coord = clamp(center + int2(x, y), int2(0, 0), tileSize - 1);
+                float2 candidate = _TileTexture.Load(int3(coord, 0));
+                range.x = min(range.x, candidate.x);
+                range.y = max(range.y, candidate.y);
+            }
+        }
+
+        s_DilatedRange = range;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+}
+
+half4 SampleBokeh(float2 uv)
+{
+    uv = ClampAndScaleUVForBilinear(uv, _SourceSize.zw);
+    return (half4)_InputTexture.SampleLevel(sampler_LinearClamp, uv, 0.0);
+}
+
+void AccumulateFar(half4 centerSample, float2 uv, float4 disp, inout half4 farAcc)
+{
+    half4 sampleColor = SampleBokeh(uv + disp.wy);
+    half farCoC = max(min(centerSample.a, sampleColor.a), 0.0h);
+    half farWeight = (half)saturate(((float)farCoC - disp.z + _BokehConstants.y) / _BokehConstants.y);
+    farAcc += half4(sampleColor.rgb, 1.0h) * farWeight;
+}
+
+void AccumulateBoth(half4 centerSample, float2 uv, float4 disp, inout half4 farAcc, inout half4 nearAcc)
+{
+    half4 sampleColor = SampleBokeh(uv + disp.wy);
+    half farCoC = max(min(centerSample.a, sampleColor.a), 0.0h);
+    half farWeight = (half)saturate(((float)farCoC - disp.z + _BokehConstants.y) / _BokehConstants.y);
+    half nearWeight = (half)saturate((-(float)sampleColor.a - disp.z + _BokehConstants.y) / _BokehConstants.y);
+    nearWeight *= (half)step(_BokehConstants.x, -(float)sampleColor.a);
+    farAcc += half4(sampleColor.rgb, 1.0h) * farWeight;
+    nearAcc += half4(sampleColor.rgb, 1.0h) * nearWeight;
+}
+
+void AccumulateCenter(half4 centerSample, inout half4 farAcc, inout half4 nearAcc, bool doFar, bool doNear)
+{
+    if (doFar)
+    {
+        half farCoC = max(centerSample.a, 0.0h);
+        half farWeight = (half)saturate(((float)farCoC + _BokehConstants.y) / _BokehConstants.y);
+        farAcc += half4(centerSample.rgb, 1.0h) * farWeight;
+    }
+
+    if (doNear)
+    {
+        half nearWeight = (half)saturate((-(float)centerSample.a + _BokehConstants.y) / _BokehConstants.y);
+        nearWeight *= (half)step(_BokehConstants.x, -(float)centerSample.a);
+        nearAcc += half4(centerSample.rgb, 1.0h) * nearWeight;
+    }
+}
+
+void AccumulateRingFar(int beginIndex, int endIndex, float maxInfluence, float2 uv, half4 centerSample, inout half4 farAcc)
+{
+    [loop]
+    for (int sampleIndex = beginIndex; sampleIndex < endIndex; ++sampleIndex)
+    {
+        float4 disp = _BokehKernel[sampleIndex];
+        [branch]
+        if (disp.z > maxInfluence)
+            break;
+        AccumulateFar(centerSample, uv, disp, farAcc);
+    }
+}
+
+void AccumulateRingBoth(int beginIndex, int endIndex, float maxInfluence, float2 uv, half4 centerSample, inout half4 farAcc, inout half4 nearAcc)
+{
+    [loop]
+    for (int sampleIndex = beginIndex; sampleIndex < endIndex; ++sampleIndex)
+    {
+        float4 disp = _BokehKernel[sampleIndex];
+        [branch]
+        if (disp.z > maxInfluence)
+            break;
+        AccumulateBoth(centerSample, uv, disp, farAcc, nearAcc);
+    }
+}
+
+[numthreads(BOKEH_GROUP_SIZE, BOKEH_GROUP_SIZE, 1)]
+void KBokehBlur(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uint3 groupId : SV_GroupID,
+    uint groupIndex : SV_GroupIndex)
+{
+    LoadDilatedTileRange(groupId.xy, groupIndex);
+
+    uint2 pixel = dispatchThreadId.xy;
+    uint2 size = uint2(_SourceSize.xy);
+    if (any(pixel >= size))
+        return;
+
+    float2 uv = (float2(pixel) + 0.5) * _SourceSize.zw;
+    half4 centerSample = (half4)_InputTexture.Load(int3(pixel, 0));
+
+    // The tile map stores the actual signed CoC written to the half-resolution input.
+    // Because the maximum radius is seven half-resolution pixels, the 3x3 tile gather
+    // above contains every texel that any pixel in this workgroup can sample.
+    float maxAbsCoc = max(abs(s_DilatedRange.x), abs(s_DilatedRange.y));
+    float maxInfluence = maxAbsCoc + _BokehConstants.y;
+    bool hasNearContribution = s_DilatedRange.x <= -_BokehConstants.x;
+
+    // If even the innermost bokeh tap is outside the largest possible CoC plus the
+    // original feather width, every non-centre tap has exactly zero weight. When no
+    // near contribution exists the reference 43-tap shader therefore reduces exactly
+    // to the centre sample.
+    [branch]
+    if (!hasNearContribution && maxInfluence < _BokehRingMin.x)
+    {
+        _OutputTexture[pixel] = float4((float3)centerSample.rgb, 0.0);
+        return;
+    }
+
+    half4 farAcc = 0.0h;
+    half4 nearAcc = 0.0h;
+    AccumulateCenter(centerSample, farAcc, nearAcc, true, hasNearContribution);
+
+    if (hasNearContribution)
+    {
+        // A near-field sample can coexist with positive CoC inside the conservative
+        // footprint. Evaluate both weights from the same hardware-bilinear texture
+        // fetch so this path remains bit-equivalent in filter support to the reference.
+        [branch]
+        if (maxInfluence >= _BokehRingMin.x)
+            AccumulateRingBoth(0, 7, maxInfluence, uv, centerSample, farAcc, nearAcc);
+        [branch]
+        if (maxInfluence >= _BokehRingMin.y)
+            AccumulateRingBoth(7, 21, maxInfluence, uv, centerSample, farAcc, nearAcc);
+        [branch]
+        if (maxInfluence >= _BokehRingMin.z)
+            AccumulateRingBoth(21, 42, maxInfluence, uv, centerSample, farAcc, nearAcc);
+    }
+    else
+    {
+        // No sample in the complete influence footprint can pass the original near
+        // cutoff, so all near arithmetic is provably dead while far filtering is exact.
+        [branch]
+        if (maxInfluence >= _BokehRingMin.x)
+            AccumulateRingFar(0, 7, maxInfluence, uv, centerSample, farAcc);
+        [branch]
+        if (maxInfluence >= _BokehRingMin.y)
+            AccumulateRingFar(7, 21, maxInfluence, uv, centerSample, farAcc);
+        [branch]
+        if (maxInfluence >= _BokehRingMin.z)
+            AccumulateRingFar(21, 42, maxInfluence, uv, centerSample, farAcc);
+    }
+
+    farAcc.rgb /= farAcc.a + (farAcc.a == 0.0);
+    nearAcc.rgb /= nearAcc.a + (nearAcc.a == 0.0);
+    nearAcc.a *= 3.14159265358979323846 / (SAMPLE_COUNT + 1);
+
+    half alpha = saturate(nearAcc.a);
+    _OutputTexture[pixel] = float4((float3)lerp(farAcc.rgb, nearAcc.rgb, alpha), (float)alpha);
+}

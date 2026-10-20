@@ -1,0 +1,50 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6e1f4b8c9a0d4d349a41b7c28f7c3d11, type: 3}
+  m_Name: AetheriaResources
+  m_EditorClassIdentifier: 
+  MultiScattering: {fileID: 7200000, guid: daf8ed95b8d259648a103aab05e86361, type: 3}
+  AtmosphereLutGenerator: {fileID: 7200000, guid: b57366388a844ce48057e67282920965, type: 3}
+  AerialPerspective: {fileID: 7200000, guid: 88677067e1180de47875773b0123e7d3, type: 3}
+  AmbientProbeConvolution: {fileID: 7200000, guid: c54db704ca75d6a4197d73499d1f03f8, type: 3}
+  EnvironmentCloudTrace: {fileID: 7200000, guid: 57a422751ce047fd90c28c9962a47047, type: 3}
+  EnvironmentComposite: {fileID: 7200000, guid: 185a866c39734446a8d4e81510cfbd95, type: 3}
+  EnvironmentTemporalBlend: {fileID: 7200000, guid: 5e8c6e61bcf24cc2aef5e47d9fcbb3d1, type: 3}
+  Composite: {fileID: 7200000, guid: 95d9c007afef4a7081d69e93c4588cbe, type: 3}
+  ScreenSpaceLightShafts: {fileID: 7200000, guid: f12f4051d9894828a233864169ffa3cc, type: 3}
+  PhysicallyBasedSky: {fileID: 4800000, guid: 90da145a631319643879bc59ca34fd34, type: 3}
+  HDRISky: {fileID: 4800000, guid: 3d5e7c9093a2421189b3d3e42404b86a, type: 3}
+  CelestialDisks: {fileID: 4800000, guid: 3e642c5b99d346ddb5fef5aa2607075c, type: 3}
+  VolumetricFogMediaClustering: {fileID: 7200000, guid: c8559737b3fa4c6988cc0b597f14db64, type: 3}
+  VolumetricFogIntegration: {fileID: 7200000, guid: 7cf410a2f576452e8053b26d4ba675e6, type: 3}
+  VolumetricFogFiltering: {fileID: 7200000, guid: c473d1eaf1d34a49a706802f6f2b5c11, type: 3}
+  EnvironmentGgxConvolve: {fileID: 7200000, guid: 0b41f2db5d7e4f5fb66284584d55a2ec, type: 3}
+  CloudLayerBake: {fileID: 7200000, guid: db7e1ae7f58a1974c82f3cc0373b1580, type: 3}
+  CloudLayerDefaultMap: {fileID: 2800000, guid: 7fa473b8c8570c648967d522c94f8ae5, type: 3}
+  VolumetricCloudsTrace: {fileID: 7200000, guid: f72358f9d39df7f408080a2a6663de91, type: 3}
+  VolumetricCloudsDenoising: {fileID: 7200000, guid: 194ddd35377530c49be99b4c3097ef3e, type: 3}
+  CloudIntegrationNoise: {fileID: 2800000, guid: c87d0d93b9f94a9db3f91e17c903f219, type: 3}
+  CloudShapeNoise: {fileID: 11700000, guid: 7c9582d0674dc9d4a91c2b95ca9448e0, type: 2}
+  CloudDetailNoise: {fileID: 11700000, guid: 88e2ae1fb9a223344b342b04d446cc04, type: 2}
+  WaterSpectralSimulation: {fileID: 7200000, guid: 32ac7f445960a854595586a600c24034, type: 3}
+  WaterFoamSimulation: {fileID: 7200000, guid: aef602315f214de380f5b1ca4c55d92c, type: 3}
+  WaterFoam: {fileID: 2800000, guid: c1c66b92dcf140cd90e4c80d29798dc0, type: 3}
+  WaterPhysicalFoam: {fileID: 2800000, guid: 604a6d6c74b64a97b4f9f4f42a71b3f1, type: 3}
+  WaterCaustics: {fileID: 2800000, guid: ead488d957644d33a078c67271786b45, type: 3}
+  WaterCausticsDistortion: {fileID: 2800000, guid: 5938461f5d4c4560ad30aa094ad88c90, type: 3}
+  WaterFourierTransformSharedMemory: {fileID: 7200000, guid: bc2ee21836a0b5147900ef35a6e1f508, type: 3}
+  WaterFourierTransformWaveOperations: {fileID: 7200000, guid: e9b7c1d5736d4c4b8d413f9f15ac6d31, type: 3}
+  WaterSurface: {fileID: 4800000, guid: 2056c8f73fe75b54d8779d5b8eeb2792, type: 3}
+  WaterDeferredLighting: {fileID: 7200000, guid: 8f7158496eb64a73beed079afdaec948, type: 3}
+  WaterUnderwaterEffect: {fileID: 4800000, guid: 85085752af7e45ebb96c7d25c503798d, type: 3}
+  WaterUnderwaterLine: {fileID: 7200000, guid: 4f8d2c3a1b6e47f4a2d509c34d8e7b11, type: 3}
+  WaterEvaluation: {fileID: 7200000, guid: 7bf7bc6600e84aa9a0fb2cf79daef0b4, type: 3}

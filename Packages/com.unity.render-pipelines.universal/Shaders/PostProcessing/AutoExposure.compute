@@ -1,0 +1,329 @@
+#pragma kernel KHistogramAverage
+#pragma kernel KHistogramSpot
+#pragma kernel KHistogramCenterWeighted
+#pragma kernel KHistogramMaskWeighted
+#pragma kernel KHistogramProcedural
+#pragma kernel KHistogramReduce
+
+#define HISTOGRAM_BINS 128
+#define GROUP_SIZE_X 16
+#define GROUP_SIZE_Y 8
+
+float4 _HistogramExposureParams;
+float4 _ExposureParams;
+float4 _ExposureCurveParams;
+float4 _AdaptationParams;
+float4 _ProceduralMaskParams;
+float4 _ProceduralMaskParams2;
+uint4 _Variants;
+
+Texture2D _SourceTexture;
+Texture2D _ExposureCurveTexture;
+Texture2D _ExposureWeightMask;
+SamplerState sampler_ExposureWeightMask;
+
+RWStructuredBuffer<uint> _HistogramBuffer;
+Texture2D _PreviousAutoExposureTexture;
+RWTexture2D<float4> _OutputAutoExposureTexture;
+
+groupshared uint gs_localHistogram[HISTOGRAM_BINS];
+groupshared float gs_partialSums[HISTOGRAM_BINS];
+groupshared float gs_values[HISTOGRAM_BINS];
+
+#define HistogramRangeScale _HistogramExposureParams.x
+#define HistogramRangeBias _HistogramExposureParams.y
+#define HistogramLowPercentile _HistogramExposureParams.z
+#define HistogramHighPercentile _HistogramExposureParams.w
+
+#define ExposureCompensation _ExposureParams.x
+#define ExposureLimitMin _ExposureParams.y
+#define ExposureLimitMax _ExposureParams.z
+#define TargetMidGrayStops _ExposureParams.w
+
+#define CurveMin _ExposureCurveParams.x
+#define CurveMax _ExposureCurveParams.y
+
+#define SpeedLightToDark _AdaptationParams.x
+#define SpeedDarkToLight _AdaptationParams.y
+#define DeltaTime _AdaptationParams.z
+#define ResetExposureStops _AdaptationParams.w
+
+#define ProceduralCenter _ProceduralMaskParams.xy
+#define ProceduralRadii _ProceduralMaskParams.zw
+#define ProceduralSoftness _ProceduralMaskParams2.x
+#define ProceduralMin _ProceduralMaskParams2.y
+#define ProceduralMax _ProceduralMaskParams2.z
+
+#define ParamResetExposure _Variants.x
+#define ParamMeteringMode _Variants.y
+#define ParamAdaptationMode _Variants.z
+#define ParamEvaluateMode _Variants.w
+
+float Luminance(float3 rgb)
+{
+    return dot(max(rgb, 0.0.xxx), float3(0.21267291, 0.7151522, 0.0721750));
+}
+
+float PositivePow(float baseValue, float powerValue)
+{
+    return pow(max(abs(baseValue), 1e-6), powerValue);
+}
+
+uint PackWeight(float weight)
+{
+    return uint(weight * 2048.0);
+}
+
+float UnpackWeight(uint weight)
+{
+    return weight * rcp(2048.0);
+}
+
+float SampleSceneStops(uint2 pixel)
+{
+    float3 color = _SourceTexture.Load(int3(pixel, 0)).xyz;
+    float luminance = max(Luminance(color), 1e-6);
+    return -log2(luminance);
+}
+
+float WeightSample(uint2 pixel, float2 sourceSize, float sceneStops, uint meteringMode)
+{
+    switch (meteringMode)
+    {
+        case 1u:
+        {
+            float screenDiagonal = 0.5 * (sourceSize.x + sourceSize.y);
+            float radius = 0.075 * screenDiagonal;
+            float2 center = sourceSize * 0.5;
+            float d = length(center - pixel) - radius;
+            return 1.0 - saturate(d);
+        }
+        case 2u:
+        {
+            float screenDiagonal = 0.5 * (sourceSize.x + sourceSize.y);
+            float2 center = sourceSize * 0.5;
+            return 1.0 - saturate(length(center - pixel) / screenDiagonal);
+        }
+        case 3u:
+        {
+            float2 uv = (pixel + 0.5) / max(sourceSize, 1.0.xx);
+            return _ExposureWeightMask.SampleLevel(sampler_ExposureWeightMask, uv, 0.0).x;
+        }
+        case 4u:
+        {
+            float radius = max(ProceduralRadii.x, ProceduralRadii.y);
+            float2 ellipseScale = float2(radius / max(ProceduralRadii.x, 1e-5), radius / max(ProceduralRadii.y, 1e-5));
+            float dist = length(ProceduralCenter * ellipseScale - pixel * ellipseScale);
+            return (sceneStops > ProceduralMin && sceneStops < ProceduralMax)
+                ? saturate(1.0 - PositivePow(dist / max(radius, 1e-5), ProceduralSoftness))
+                : 0.0;
+        }
+        default:
+            return 1.0;
+    }
+}
+
+uint GetHistogramBinLocation(float sceneStops)
+{
+    float fraction = saturate(sceneStops * HistogramRangeScale + HistogramRangeBias);
+    return uint(fraction * (HISTOGRAM_BINS - 1));
+}
+
+float BinLocationToSceneStops(uint binIndex)
+{
+    float fraction = binIndex * rcp(float(HISTOGRAM_BINS - 1));
+    return (fraction - HistogramRangeBias) / HistogramRangeScale;
+}
+
+float SampleCurveValue(float fraction, uint channel)
+{
+    uint width;
+    uint height;
+    _ExposureCurveTexture.GetDimensions(width, height);
+
+    float x = saturate(fraction) * max((float)width - 1.0, 0.0);
+    uint x0 = min((uint)floor(x), width - 1u);
+    uint x1 = min(x0 + 1u, width - 1u);
+    float t = x - x0;
+
+    float4 v0 = _ExposureCurveTexture.Load(int3(x0, 0, 0));
+    float4 v1 = _ExposureCurveTexture.Load(int3(x1, 0, 0));
+
+    if (channel == 0u)
+        return lerp(v0.x, v1.x, t);
+    if (channel == 1u)
+        return lerp(v0.y, v1.y, t);
+
+    return lerp(v0.z, v1.z, t);
+}
+
+float CurveRemap(float sceneStops, out float limitMin, out float limitMax)
+{
+    float fraction = saturate((sceneStops - CurveMin) / max(CurveMax - CurveMin, 1e-5));
+    limitMin = SampleCurveValue(fraction, 1u);
+    limitMax = SampleCurveValue(fraction, 2u);
+    return SampleCurveValue(fraction, 0u);
+}
+
+float AdaptExposure(float currentExposure, float targetExposure)
+{
+    float adaptedExposure = targetExposure;
+
+    if (ParamAdaptationMode == 1u)
+    {
+        adaptedExposure = currentExposure;
+        if (DeltaTime > 0.0)
+        {
+            float speed = targetExposure < currentExposure ? SpeedDarkToLight : SpeedLightToDark;
+            adaptedExposure = currentExposure + (targetExposure - currentExposure) *
+                (1.0 - exp2(-max(speed, 1e-4) * DeltaTime));
+        }
+    }
+
+    return adaptedExposure;
+}
+
+float ComputeTotalSum(uint threadID, float threadValue)
+{
+    gs_partialSums[threadID] = threadValue;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = HISTOGRAM_BINS >> 1u; stride > 0u; stride >>= 1u)
+    {
+        if (threadID < stride)
+            gs_partialSums[threadID] += gs_partialSums[threadID + stride];
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    return gs_partialSums[0];
+}
+
+void ProcessBin(uint binIndex, inout float2 extremesSums, inout float sceneStopsSum, inout float totalWeight)
+{
+    float histValue = gs_values[binIndex];
+    float sceneStops = BinLocationToSceneStops(binIndex);
+
+    float shadowTrim = min(extremesSums.x, histValue);
+    extremesSums.x -= shadowTrim;
+    histValue -= shadowTrim;
+
+    histValue = min(extremesSums.y, histValue);
+    extremesSums.y -= histValue;
+
+    sceneStopsSum += histValue * sceneStops;
+    totalWeight += histValue;
+}
+
+void GenerateHistogram(uint groupIndex, uint3 dispatchThreadId, uint meteringMode)
+{
+    if (groupIndex < HISTOGRAM_BINS)
+        gs_localHistogram[groupIndex] = 0u;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    uint2 sourceSize;
+    _SourceTexture.GetDimensions(sourceSize.x, sourceSize.y);
+    uint2 fullResCoords = dispatchThreadId.xy << 1u;
+
+    if (all(fullResCoords < sourceSize))
+    {
+        float sceneStops = SampleSceneStops(fullResCoords);
+        float weight = WeightSample(fullResCoords, sourceSize, sceneStops, meteringMode);
+        uint bin = GetHistogramBinLocation(sceneStops);
+        InterlockedAdd(gs_localHistogram[bin], PackWeight(weight));
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (groupIndex < HISTOGRAM_BINS)
+    {
+        uint localCount = gs_localHistogram[groupIndex];
+        if (localCount != 0u)
+            InterlockedAdd(_HistogramBuffer[groupIndex], localCount);
+    }
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KHistogramAverage(uint groupIndex : SV_GroupIndex, uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    GenerateHistogram(groupIndex, dispatchThreadId, 0u);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KHistogramSpot(uint groupIndex : SV_GroupIndex, uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    GenerateHistogram(groupIndex, dispatchThreadId, 1u);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KHistogramCenterWeighted(uint groupIndex : SV_GroupIndex, uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    GenerateHistogram(groupIndex, dispatchThreadId, 2u);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KHistogramMaskWeighted(uint groupIndex : SV_GroupIndex, uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    GenerateHistogram(groupIndex, dispatchThreadId, 3u);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KHistogramProcedural(uint groupIndex : SV_GroupIndex, uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    GenerateHistogram(groupIndex, dispatchThreadId, 4u);
+}
+
+[numthreads(HISTOGRAM_BINS, 1, 1)]
+void KHistogramReduce(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint threadID = dispatchThreadId.x;
+    uint packedHistogram = _HistogramBuffer[threadID];
+    _HistogramBuffer[threadID] = 0u;
+    float histogramValue = UnpackWeight(packedHistogram);
+    gs_values[threadID] = histogramValue;
+
+    float sum = ComputeTotalSum(threadID, histogramValue);
+    if (sum <= 1e-6)
+        return;
+
+    float2 extremesSums = float2(HistogramLowPercentile, HistogramHighPercentile) * sum;
+
+    if (threadID == 0u)
+    {
+        float sceneStopsSum = 0.0;
+        float totalWeight = 0.0;
+
+        for (uint i = 0u; i < HISTOGRAM_BINS; ++i)
+            ProcessBin(i, extremesSums, sceneStopsSum, totalWeight);
+
+        totalWeight = max(totalWeight, 1e-4);
+        float meteredSceneStops = sceneStopsSum * rcp(totalWeight);
+
+        float minExposure = ExposureLimitMin;
+        float maxExposure = ExposureLimitMax;
+        float targetExposure;
+
+        if (ParamEvaluateMode == 2u)
+        {
+            targetExposure = CurveRemap(meteredSceneStops, minExposure, maxExposure);
+        }
+        else
+        {
+            targetExposure = meteredSceneStops + TargetMidGrayStops;
+        }
+
+        targetExposure += ExposureCompensation;
+        float clampedTargetExposure = clamp(targetExposure, minExposure, maxExposure);
+
+        float previousExposure = ResetExposureStops;
+        if (ParamResetExposure == 0u)
+            previousExposure = _PreviousAutoExposureTexture.Load(int3(0, 0, 0)).y;
+
+        float adaptedExposure = AdaptExposure(previousExposure, clampedTargetExposure);
+        adaptedExposure = clamp(adaptedExposure, minExposure, maxExposure);
+
+        float exposureMultiplier = exp2(clamp(adaptedExposure, -16.0, 16.0));
+        _OutputAutoExposureTexture[uint2(0, 0)] = float4(exposureMultiplier, adaptedExposure, meteredSceneStops, targetExposure);
+    }
+}

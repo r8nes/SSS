@@ -1,0 +1,165 @@
+//
+// This is a modified version of the BlurCS compute shader from Microsoft's MiniEngine
+// library. The copyright notice from the original version is included below.
+//
+// The original source code of MiniEngine is available on GitHub.
+// https://github.com/Microsoft/DirectX-Graphics-Samples
+//
+
+//
+// Copyright (c) Microsoft. All rights reserved.
+// This code is licensed under the MIT License (MIT).
+// THIS CODE IS PROVIDED *AS IS* WITHOUT WARRANTY OF
+// ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING ANY
+// IMPLIED WARRANTIES OF FITNESS FOR A PARTICULAR
+// PURPOSE, MERCHANTABILITY, OR NON-INFRINGEMENT.
+//
+// Developed by Minigraph
+//
+// Author:  Bob Brown
+//
+
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2 glcore gles3 webgpu
+
+#pragma kernel KColorDownsampleGaussian KERNEL_SIZE=16 MAIN_DOWNSAMPLE_GAUSSIAN=KColorDownsampleGaussian
+#pragma kernel KColorDownsampleGaussianFast KERNEL_SIZE=16 MAIN_DOWNSAMPLE_GAUSSIAN=KColorDownsampleGaussianFast COLOR_PYRAMID_FAST_DOWNSAMPLE
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+TEXTURE2D(_Source);
+SamplerState sampler_LinearClamp;
+RW_TEXTURE2D(float4, _Destination);
+RW_TEXTURE2D(float4, _NextSource);
+
+CBUFFER_START(cb)
+    float4 _Size;
+    float4 _SourceSize;
+CBUFFER_END
+
+#define COLOR_PYRAMID_TILE_SIZE 16
+#define COLOR_PYRAMID_RADIUS 4
+#define COLOR_PYRAMID_SOURCE_TILE_SIZE 24
+#define COLOR_PYRAMID_SOURCE_TILE_COUNT 576
+#define COLOR_PYRAMID_HORIZONTAL_COUNT 384
+
+#if defined(COLOR_PYRAMID_FAST_DOWNSAMPLE)
+groupshared uint2 gs_downsampled[COLOR_PYRAMID_SOURCE_TILE_COUNT];
+#else
+groupshared float4 gs_downsampled[COLOR_PYRAMID_SOURCE_TILE_COUNT];
+#endif
+groupshared float4 gs_horizontal[COLOR_PYRAMID_HORIZONTAL_COUNT];
+
+float4 ColorPyramidGaussian9(float4 a, float4 b, float4 c, float4 d, float4 e, float4 f, float4 g, float4 h, float4 i)
+{
+    return 0.27343750 * e
+         + 0.21875000 * (d + f)
+         + 0.10937500 * (c + g)
+         + 0.03125000 * (b + h)
+         + 0.00390625 * (a + i);
+}
+
+
+#if defined(COLOR_PYRAMID_FAST_DOWNSAMPLE)
+uint2 ColorPyramidPackHalf4(float4 value)
+{
+    uint2 packed;
+    packed.x = f32tof16(value.x) | (f32tof16(value.y) << 16);
+    packed.y = f32tof16(value.z) | (f32tof16(value.w) << 16);
+    return packed;
+}
+
+float4 ColorPyramidUnpackHalf4(uint2 packed)
+{
+    return float4(
+        f16tof32(packed.x & 0xFFFFu),
+        f16tof32(packed.x >> 16),
+        f16tof32(packed.y & 0xFFFFu),
+        f16tof32(packed.y >> 16));
+}
+
+float4 ColorPyramidLoadDownsample(uint index)
+{
+    return ColorPyramidUnpackHalf4(gs_downsampled[index]);
+}
+#else
+float4 ColorPyramidLoadDownsample(uint index)
+{
+    return gs_downsampled[index];
+}
+#endif
+
+float4 ColorPyramidDownsample(int2 lowResolutionPixel)
+{
+    int2 destinationSize = max(int2(_Size.zw), int2(1, 1));
+    lowResolutionPixel = clamp(lowResolutionPixel, int2(0, 0), destinationSize - 1);
+    int2 sourceBase = lowResolutionPixel << 1;
+    int2 sourceLimit = max(int2(_Size.xy) - 1, int2(0, 0));
+#if defined(COLOR_PYRAMID_FAST_DOWNSAMPLE)
+    int2 p0 = min(sourceBase, sourceLimit);
+    int2 p1 = min(sourceBase + int2(1, 1), sourceLimit);
+    float2 sampleTexel = (float2(p0 + p1) + 1.0) * 0.5;
+    float2 uv = sampleTexel * _SourceSize.zw;
+    float4 value = SAMPLE_TEXTURE2D_LOD(_Source, sampler_LinearClamp, uv, 0.0);
+#else
+    int2 p00 = min(sourceBase, sourceLimit);
+    int2 p10 = min(sourceBase + int2(1, 0), sourceLimit);
+    int2 p01 = min(sourceBase + int2(0, 1), sourceLimit);
+    int2 p11 = min(sourceBase + int2(1, 1), sourceLimit);
+    float4 value = (LOAD_TEXTURE2D(_Source, p00) + LOAD_TEXTURE2D(_Source, p10) +
+                    LOAD_TEXTURE2D(_Source, p01) + LOAD_TEXTURE2D(_Source, p11)) * 0.25;
+#endif
+    return float4(
+        f16tof32(f32tof16(value.r)),
+        f16tof32(f32tof16(value.g)),
+        f16tof32(f32tof16(value.b)),
+        f16tof32(f32tof16(value.a)));
+}
+
+[numthreads(KERNEL_SIZE, KERNEL_SIZE, 1)]
+void MAIN_DOWNSAMPLE_GAUSSIAN(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint linearThread = groupThreadId.y * COLOR_PYRAMID_TILE_SIZE + groupThreadId.x;
+    int2 tileOrigin = int2(groupId.xy * COLOR_PYRAMID_TILE_SIZE) - COLOR_PYRAMID_RADIUS;
+
+    for (uint sourceIndex = linearThread; sourceIndex < COLOR_PYRAMID_SOURCE_TILE_COUNT; sourceIndex += COLOR_PYRAMID_TILE_SIZE * COLOR_PYRAMID_TILE_SIZE)
+    {
+        uint y = sourceIndex / COLOR_PYRAMID_SOURCE_TILE_SIZE;
+        uint x = sourceIndex - y * COLOR_PYRAMID_SOURCE_TILE_SIZE;
+#if defined(COLOR_PYRAMID_FAST_DOWNSAMPLE)
+        gs_downsampled[sourceIndex] = ColorPyramidPackHalf4(ColorPyramidDownsample(tileOrigin + int2(x, y)));
+#else
+        gs_downsampled[sourceIndex] = ColorPyramidDownsample(tileOrigin + int2(x, y));
+#endif
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint horizontalIndex = linearThread; horizontalIndex < COLOR_PYRAMID_HORIZONTAL_COUNT; horizontalIndex += COLOR_PYRAMID_TILE_SIZE * COLOR_PYRAMID_TILE_SIZE)
+    {
+        uint row = horizontalIndex / COLOR_PYRAMID_TILE_SIZE;
+        uint column = horizontalIndex - row * COLOR_PYRAMID_TILE_SIZE;
+        uint start = row * COLOR_PYRAMID_SOURCE_TILE_SIZE + column;
+        gs_horizontal[horizontalIndex] = ColorPyramidGaussian9(
+            ColorPyramidLoadDownsample(start + 0), ColorPyramidLoadDownsample(start + 1), ColorPyramidLoadDownsample(start + 2),
+            ColorPyramidLoadDownsample(start + 3), ColorPyramidLoadDownsample(start + 4), ColorPyramidLoadDownsample(start + 5),
+            ColorPyramidLoadDownsample(start + 6), ColorPyramidLoadDownsample(start + 7), ColorPyramidLoadDownsample(start + 8));
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (all(dispatchThreadId.xy < uint2(_Size.zw)))
+    {
+        uint start = groupThreadId.y * COLOR_PYRAMID_TILE_SIZE + groupThreadId.x;
+        float4 filtered = ColorPyramidGaussian9(
+            gs_horizontal[start + 0 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 1 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 2 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 3 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 4 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 5 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 6 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 7 * COLOR_PYRAMID_TILE_SIZE],
+            gs_horizontal[start + 8 * COLOR_PYRAMID_TILE_SIZE]);
+        _Destination[dispatchThreadId.xy] = filtered;
+        _NextSource[dispatchThreadId.xy] = filtered;
+    }
+}

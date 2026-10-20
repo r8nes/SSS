@@ -1,0 +1,540 @@
+// SSAO Compute Shader for GTAO mode
+// This compute shader provides an alternative path to the fragment shader for GTAO computation
+
+// #pragma enable_d3d11_debug_symbols
+
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2 glcore gles3 webgpu
+
+#pragma kernel ComputeAO
+#pragma kernel ComputeAOLow GTAO_FIXED_STEP_COUNT=2 GTAO_FIXED_DIRECTION_COUNT=1
+#pragma kernel ComputeAOMedium GTAO_FIXED_STEP_COUNT=4 GTAO_FIXED_DIRECTION_COUNT=2
+#pragma kernel ComputeAOHigh GTAO_FIXED_STEP_COUNT=6 GTAO_FIXED_DIRECTION_COUNT=4
+#pragma kernel SpatialDenoise
+#pragma kernel SpatialDenoiseFinal
+#pragma kernel BoxSpatialFilter
+#pragma kernel TemporalFilter
+#pragma kernel TemporalFilterPrefiltered
+#pragma kernel TemporalFilterFinal
+#pragma kernel TemporalFilterFinalPrefiltered
+#pragma kernel BilateralUpsample
+#pragma kernel FinalBlit
+
+// Keywords matching fragment shader variants
+#pragma multi_compile_local _ _BLUE_NOISE _INTERLEAVED_GRADIENT
+#pragma multi_compile_local _ _TEMPORAL_FILTERING
+#pragma multi_compile_local _ _ORTHOGRAPHIC
+#pragma multi_compile_local _ _GTAO_DEPTH_PYRAMID
+
+// Provide types needed for the texture and macro declarations that follow
+#define GTAO_COMPUTE_PATH
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DepthPyramidSampling.hlsl"
+
+// Textures and Caller-defined macros for sampling (must be defined before SSAOCommon include)
+TEXTURE2D_HALF(_BlueNoiseTexture);
+SAMPLER(sampler_BlitTexture);
+#define SSAO_COMMON_SAMPLE_BASEMAP_R(uv)                            half(SAMPLE_TEXTURE2D_X_LOD(_BlitTexture, sampler_BlitTexture, UnityStereoTransformScreenSpaceTex(uv), 0).r)
+#define SSAO_COMMON_SAMPLE_BLUE_NOISE(uv)                           SAMPLE_TEXTURE2D_LOD(_BlueNoiseTexture, sampler_PointRepeat, UnityStereoTransformScreenSpaceTex(uv), 0).a
+#define SSAO_COMMON_FETCH_DEPTH(samplePos, screenSize, downsample)  LoadSceneDepth(uint2(samplePos * rcp(downsample)))
+#if defined(_GTAO_DEPTH_PYRAMID)
+    #define SSAO_COMMON_FETCH_DEPTH_MIP(samplePos, screenSize, downsample, mip) DepthPyramidSampleNearest(samplePos * rcp(screenSize), mip)
+#else
+    #define SSAO_COMMON_FETCH_DEPTH_MIP(samplePos, screenSize, downsample, mip) SSAO_COMMON_FETCH_DEPTH(samplePos, screenSize, downsample)
+#endif
+#define SSAO_COMMON_DECLARE_UNIFORMS
+
+// Compute path uses dynamic values instead of compile-time constants
+int _GTAODirectionCount;
+int _GTAOStepCount;
+int _GTAOTemporalHistoryValid;
+int _GTAOProjectionChanged;
+int _GTAOUpsampleOutputFinal;
+float _GTAOBoxFilterStep; // a-trous step width, height
+
+#if defined(GTAO_FIXED_STEP_COUNT)
+    #define GTAO_STEP_COUNT         GTAO_FIXED_STEP_COUNT
+#else
+    #define GTAO_STEP_COUNT         _GTAOStepCount
+#endif
+#if defined(_TEMPORAL_FILTERING)
+    // Match HDRP: temporal rotation amortizes directions over frames.
+    #define GTAO_DIRECTION_COUNT    1
+#elif defined(GTAO_FIXED_DIRECTION_COUNT)
+    #define GTAO_DIRECTION_COUNT    GTAO_FIXED_DIRECTION_COUNT
+#else
+    #define GTAO_DIRECTION_COUNT    _GTAODirectionCount
+#endif
+
+// Includes
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareNormalsTexture.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/FoveatedRendering.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/SSAOCommon.hlsl"
+
+RW_TEXTURE2D(half4, _AOOutput);
+RW_TEXTURE2D(half4, _BlurOutput);
+RW_TEXTURE2D(half4, _OcclusionTexture);
+RW_TEXTURE2D(half4, _AOOutputHistory);
+RW_TEXTURE2D(half4, _FinalOutput);
+
+TEXTURE2D_X_HALF(_ScreenSpaceOcclusionTexture);
+TEXTURE2D_X(_AOPackedHistory);
+TEXTURE2D_X(_MotionVectorTexture);
+
+// Compute-specific defines
+#define SSAO_GROUP_SIZE 8
+#define DOWNSAMPLE              _SSAOParams.z
+#define DOWNSAMPLED_SCREEN_SIZE uint2(ceil(_SourceSize.xy * DOWNSAMPLE))
+#define DOWNSAMPLED_TEXEL_SIZE  rcp(float2(DOWNSAMPLED_SCREEN_SIZE))
+
+static const float kMotionWeightScale = 100.0;
+static const float kSpatialBilateralAggressiveness = 2.25;
+// ------------------------------------------------------------------
+// Compute-Specific Functions
+// ------------------------------------------------------------------
+
+float2 SampleMotionVectors(TEXTURE2D_X_PARAM(motionVectors, samplerMotionVectors), float2 uv)
+{
+    return SAMPLE_TEXTURE2D_X_LOD(motionVectors, samplerMotionVectors, UnityStereoTransformScreenSpaceTex(uv), 0).xy;
+}
+
+half4 PackAOAndDepth(half ao, float rawDepth)
+{
+    float2 packedDepth = PackFloatToR8G8Safe(rawDepth);
+    return half4(ao, packedDepth.x, packedDepth.y, HALF_ONE);
+}
+
+float GetPackedDepth(half4 value)
+{
+    return UnpackFloatFromR8G8Safe(float2(value.g, value.b));
+}
+
+struct GTAOSpatialStats
+{
+    float filteredAO;
+    float minAO;
+    float maxAO;
+    float averageAO;
+    float centerDepth;
+};
+
+// Bounds-safe depth-bilateral neighborhood used by the spatial pass. The temporal
+// pass calls the same function without filtering to obtain HDRP's 3x3 clamp range.
+GTAOSpatialStats EvaluateSpatialNeighborhood(TEXTURE2D_X(inputAO), uint2 centralPixelCoords, bool applySpatialFilter)
+{
+    GTAOSpatialStats result;
+    result.minAO = 2.0;
+    result.maxAO = -2.0;
+    result.averageAO = 0.0;
+
+    const int2 maxCoord = int2(DOWNSAMPLED_SCREEN_SIZE) - 1;
+    half4 center = half4(LOAD_TEXTURE2D_X_LOD(inputAO, centralPixelCoords, 0));
+    result.centerDepth = GetPackedDepth(center);
+    float centerLinearDepth = GetLinearEyeDepth(result.centerDepth);
+    float weightedAO = 0.0;
+    float totalWeight = 0.0;
+
+    UNITY_UNROLL
+    for (int y = -1; y <= 1; ++y)
+    {
+        UNITY_UNROLL
+        for (int x = -1; x <= 1; ++x)
+        {
+            int2 sampleCoord = clamp(int2(centralPixelCoords) + int2(x, y), int2(0, 0), maxCoord);
+            half4 sampleValue = (x == 0 && y == 0)
+                ? center
+                : half4(LOAD_TEXTURE2D_X_LOD(inputAO, sampleCoord, 0));
+            float sampleAO = float(GetPackedAO(sampleValue));
+
+            result.averageAO += sampleAO;
+            result.minAO = min(result.minAO, sampleAO);
+            result.maxAO = max(result.maxAO, sampleAO);
+
+            if (applySpatialFilter)
+            {
+                float sampleLinearDepth = GetLinearEyeDepth(GetPackedDepth(sampleValue));
+                float weight = (x == 0 && y == 0)
+                    ? 1.0
+                    : saturate(1.0 - (kSpatialBilateralAggressiveness * abs(sampleLinearDepth - centerLinearDepth) + 0.01));
+                weightedAO += sampleAO * weight;
+                totalWeight += weight;
+            }
+        }
+    }
+
+    result.averageAO *= 1.0 / 9.0;
+    result.filteredAO = applySpatialFilter
+        ? weightedAO * rcp(max(totalWeight, 1.0e-4))
+        : float(GetPackedAO(center));
+    return result;
+}
+
+// ------------------------------------------------------------------
+// GTAO Compute Kernel
+// ------------------------------------------------------------------
+void ComputeAOImpl(uint3 dispatchThreadId)
+{
+    const uint2 pixelCoords = dispatchThreadId.xy;
+    if (any(pixelCoords >= DOWNSAMPLED_SCREEN_SIZE))
+        return;
+
+    half temporalRotation = 0;
+    uint temporalOffset   = 0u;
+#if defined(_TEMPORAL_FILTERING)
+    temporalRotation = _SSAOTemporalRotation;
+    temporalOffset   = _SSAOTemporalOffset;
+#endif
+
+    GTAOConfig config = CreateGTAOConfig(_SSAOParams, _SSAOParams2, _AODepthToViewParams, BlueNoiseScale, BlueNoiseOffset, temporalRotation, temporalOffset);
+
+    float2 positionSS = float2(pixelCoords) + 0.5;
+    float2 uv = positionSS * DOWNSAMPLED_TEXEL_SIZE;
+    uint2 fullResCoords = uint2(positionSS * rcp(config.downsample));
+
+#if defined(_GTAO_DEPTH_PYRAMID)
+    float centerRawDepth = DepthPyramidLoadNearest(int2(fullResCoords), 0);
+#else
+    float centerRawDepth = LoadSceneDepth(fullResCoords);
+#endif
+    float centerLinearDepth = GetLinearEyeDepth(centerRawDepth);
+    half centerHalfLinearDepth = half(centerLinearDepth);
+    half3 centerNormal = half3(LoadSceneNormals(fullResCoords));
+
+    if (ShouldSkipAO(centerRawDepth, centerHalfLinearDepth, config.falloff))
+    {
+        _AOOutput[pixelCoords] = PackAOAndDepth(HALF_ZERO, centerRawDepth);
+        return;
+    }
+
+    float3 positionVS = GetPositionVS(positionSS, centerRawDepth, config.depthToViewParams);
+    half3 V = GetViewVectorVS(positionVS);
+
+    half ao = EvaluateGTAOValue(config, uv, positionSS, positionVS, V, centerNormal, centerLinearDepth);
+    _AOOutput[pixelCoords] = PackAOAndDepth(ao, centerRawDepth);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void ComputeAO(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    ComputeAOImpl(dispatchThreadId);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void ComputeAOLow(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    ComputeAOImpl(dispatchThreadId);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void ComputeAOMedium(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    ComputeAOImpl(dispatchThreadId);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void ComputeAOHigh(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    ComputeAOImpl(dispatchThreadId);
+}
+
+// ------------------------------------------------------------------
+// HDRP-inspired single-dispatch spatial denoise.
+// The URP accumulation buffer already carries a full normal, so the edge stop can
+// use that data without another depth fetch or HDRP's float-bit packed intermediary.
+// ------------------------------------------------------------------
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void SpatialDenoise(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 pixelCoords = dispatchThreadId.xy;
+    if (any(pixelCoords >= DOWNSAMPLED_SCREEN_SIZE))
+        return;
+
+    GTAOSpatialStats spatial = EvaluateSpatialNeighborhood(_BlitTexture, pixelCoords, true);
+    _BlurOutput[pixelCoords] = PackAOAndDepth(half(spatial.filteredAO), spatial.centerDepth);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void SpatialDenoiseFinal(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 pixelCoords = dispatchThreadId.xy;
+    if (any(pixelCoords >= DOWNSAMPLED_SCREEN_SIZE))
+        return;
+
+    GTAOSpatialStats spatial = EvaluateSpatialNeighborhood(_BlitTexture, pixelCoords, true);
+    half visibility = HALF_ONE - half(spatial.filteredAO);
+    _FinalOutput[pixelCoords] = half4(visibility, visibility, visibility, HALF_ONE);
+}
+
+// ------------------------------------------------------------------
+// GTAO Box Spatial Filter Kernel
+// ------------------------------------------------------------------
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void BoxSpatialFilter(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 pixelCoords = dispatchThreadId.xy;
+    if (any(pixelCoords >= DOWNSAMPLED_SCREEN_SIZE))
+        return;
+
+    const int2 downsampledScreenMax = int2(DOWNSAMPLED_SCREEN_SIZE) - 1;
+    const int2 pixelCoordsI = int2(pixelCoords);
+
+    half4 center = half4(LOAD_TEXTURE2D_X_LOD(_BlitTexture, pixelCoords, 0));
+    half centerAO = GetPackedAO(center);
+    float centerRawDepth = GetPackedDepth(center);
+
+    half temporalRotation = 0;
+    uint temporalOffset = 0u;
+#if defined(_TEMPORAL_FILTERING)
+    temporalRotation = _SSAOTemporalRotation;
+    temporalOffset = _SSAOTemporalOffset;
+#endif
+
+    GTAOConfig config = CreateGTAOConfig(_SSAOParams, _SSAOParams2, _AODepthToViewParams, BlueNoiseScale, BlueNoiseOffset, temporalRotation, temporalOffset);
+    float centerLinearDepth = GetLinearEyeDepth(centerRawDepth);
+
+    if (ShouldSkipAO(centerRawDepth, half(centerLinearDepth), config.falloff))
+    {
+        _BlurOutput[pixelCoords] = PackAOAndDepth(HALF_ZERO, centerRawDepth);
+        return;
+    }
+
+    float sumAO = centerAO;
+    float sumWeight = 1.0;
+
+    const static int2 sampleOffsets[4] =
+    {
+        int2(-1,  0),
+        int2( 0, -1),
+        int2( 1,  0),
+        int2( 0,  1)
+    };
+
+    float filterStep = max(_GTAOBoxFilterStep * DOWNSAMPLE, 1.0);
+
+    UNITY_UNROLL
+    for (uint i = 0u; i < 4u; ++i)
+    {
+        int2 sampleOffset = int2(round(float2(sampleOffsets[i]) * filterStep));
+        int2 samplePixelCoords = clamp(pixelCoordsI + sampleOffset, int2(0, 0), downsampledScreenMax);
+        half4 sampleValue = half4(LOAD_TEXTURE2D_X_LOD(_BlitTexture, samplePixelCoords, 0));
+        half sampleAO = GetPackedAO(sampleValue);
+        float sampleLinearDepth = GetLinearEyeDepth(GetPackedDepth(sampleValue));
+        float sampleWeight = saturate(1.0 -
+            (kSpatialBilateralAggressiveness * abs(sampleLinearDepth - centerLinearDepth) + 0.01));
+
+        sumAO += float(sampleAO) * sampleWeight;
+        sumWeight += sampleWeight;
+    }
+
+    half filteredAO = half(sumAO * rcp(max(sumWeight, 1.0e-4)));
+    _BlurOutput[pixelCoords] = PackAOAndDepth(filteredAO, centerRawDepth);
+}
+
+// ------------------------------------------------------------------
+// HDRP-style temporal resolve. Prefiltered kernels consume the dedicated spatial
+// pass; the other entry points remain useful for the explicit box-filter mode.
+// ------------------------------------------------------------------
+void TemporalFilterImpl(uint3 dispatchThreadId, bool outputFinal, bool applySpatialFilter)
+{
+    const uint2 pixelCoords = dispatchThreadId.xy;
+    if (any(pixelCoords >= DOWNSAMPLED_SCREEN_SIZE))
+        return;
+
+    float2 uv = (float2(pixelCoords) + 0.5) * DOWNSAMPLED_TEXEL_SIZE;
+    GTAOSpatialStats spatial = EvaluateSpatialNeighborhood(_BlitTexture, pixelCoords, applySpatialFilter);
+    half currAO = half(spatial.filteredAO);
+    float currDepth = spatial.centerDepth;
+
+    if (currDepth == UNITY_RAW_FAR_CLIP_VALUE || currDepth < SKY_DEPTH_VALUE)
+    {
+        if (outputFinal)
+            _FinalOutput[pixelCoords] = HALF4_ONE;
+        else
+            _OcclusionTexture[pixelCoords] = half4(HALF_ZERO, HALF_ZERO, HALF_ZERO, HALF_ONE);
+        _AOOutputHistory[pixelCoords] = half4(CreateHistoryData(0.0, 0.0, 0.0));
+        return;
+    }
+
+    float2 velocity = SampleMotionVectors(TEXTURE2D_X_ARGS(_MotionVectorTexture, sampler_PointClamp), uv);
+    float motionVecLength = length(velocity);
+    float motionVecWeighting = saturate(motionVecLength * kMotionWeightScale);
+
+    float2 historyUV = uv - velocity;
+    bool validHistoryUV = historyUV.x >= 0.0 && historyUV.x <= 1.0 && historyUV.y >= 0.0 && historyUV.y <= 1.0;
+
+    float4 historyData = float4(currDepth, 0.0, currAO, motionVecWeighting);
+    if (_GTAOTemporalHistoryValid != 0 && validHistoryUV)
+    {
+        float2 historyUVStereo = UnityStereoTransformScreenSpaceTex(historyUV);
+        historyData = SAMPLE_TEXTURE2D_X_LOD(_AOPackedHistory, sampler_LinearClamp, historyUVStereo, 0);
+    }
+
+    float prevDepth = UnpackFloatFromR8G8Safe(historyData.xy);
+    float prevAO = historyData.z;
+    float previousMotionWeighting = historyData.w;
+
+    // HDRP computes feedback from the unclipped history so a disagreement still
+    // lowers accumulation even when neighborhood clipping makes it plausible.
+    float aoDifference = abs(currAO - prevAO) / max(max(currAO, prevAO), 0.1);
+    float agreement = saturate(1.0 - aoDifference);
+    float maximumFeedback = lerp(0.85, 0.95, saturate(_SSAOHistoryLength));
+    float feedback = lerp(0.85, maximumFeedback, agreement * agreement);
+
+    // HDRP neighborhood clipping. The input has already passed through the dedicated
+    // spatial denoise dispatch, so this 3x3 range contains filtered AO rather than
+    // the raw rotating one-direction samples.
+    float upperNudge = lerp(5.0, 0.25, saturate(_SSAOGhostingMitigation));
+    float nudge = lerp(upperNudge, 0.25, motionVecWeighting) * abs(spatial.averageAO - currAO);
+    prevAO = clamp(prevAO, spatial.minAO - nudge, spatial.maxAO + nudge);
+
+    // Compare eye depths so projection-only changes such as gameplay FOV animation
+    // do not invalidate otherwise stationary history. Keep HDRP's cheap ratio shape.
+    float currLinearDepth = GetLinearEyeDepth(currDepth);
+    float prevLinearDepth = GetLinearEyeDepth(prevDepth);
+    float minimumDepth = min(prevLinearDepth, currLinearDepth);
+    float maximumDepth = max(prevLinearDepth, currLinearDepth);
+    float depthValidity = saturate(minimumDepth * rcp(max(maximumDepth, 1.0e-6)) + 0.01);
+
+    // Acceleration/deceleration is a useful cheap rejection signal. This does not try
+    // to validate direction; depth and neighborhood tests handle disocclusions.
+    float velocityValidity = (_GTAOProjectionChanged != 0)
+        ? 1.0
+        : 1.0 - saturate(abs(previousMotionWeighting - motionVecWeighting) * 3.0);
+    float historyValidity = (_GTAOTemporalHistoryValid != 0 && validHistoryUV)
+        ? depthValidity * velocityValidity
+        : 0.0;
+
+    float newAO = lerp(currAO, prevAO, feedback * historyValidity);
+    float4 historyPacked = CreateHistoryData(newAO, currDepth, motionVecWeighting);
+
+    if (outputFinal)
+    {
+        half visibility = HALF_ONE - half(newAO);
+        _FinalOutput[pixelCoords] = half4(visibility, visibility, visibility, HALF_ONE);
+    }
+    else
+    {
+        _OcclusionTexture[pixelCoords] = half4(half(newAO), HALF_ZERO, HALF_ZERO, HALF_ONE);
+    }
+    _AOOutputHistory[pixelCoords] = half4(historyPacked);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void TemporalFilter(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    TemporalFilterImpl(dispatchThreadId, false, true);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void TemporalFilterPrefiltered(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    TemporalFilterImpl(dispatchThreadId, false, false);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void TemporalFilterFinal(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    TemporalFilterImpl(dispatchThreadId, true, true);
+}
+
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void TemporalFilterFinalPrefiltered(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    TemporalFilterImpl(dispatchThreadId, true, false);
+}
+
+float BilateralUpsampleAO(float highDepth, float4 lowDepths, float4 lowAO, float4 spatialWeights)
+{
+    const float depthTolerance = 1.0e-5;
+    float4 weights = spatialWeights / (abs(highDepth - lowDepths) + depthTolerance);
+    return dot(lowAO, weights) * rcp(max(dot(weights, 1.0), 1.0e-6));
+}
+
+void WriteUpsampledAO(uint2 outputCoords, float4 lowDepths, float4 lowAO, float4 spatialWeights)
+{
+    uint2 fullResScreenSize = uint2(_SourceSize.xy);
+    if (any(outputCoords >= fullResScreenSize))
+        return;
+
+    float highDepth = LoadSceneDepth(outputCoords);
+    half ao = half(BilateralUpsampleAO(highDepth, lowDepths, lowAO, spatialWeights));
+    half output = (_GTAOUpsampleOutputFinal != 0) ? HALF_ONE - ao : ao;
+    _FinalOutput[outputCoords] = half4(output, output, output, HALF_ONE);
+}
+
+// One half-resolution thread resolves the matching 2x2 full-resolution block.
+// The phase matches HDRP: low-res coordinate p owns full-res pixels 2p and 2p-1.
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void BilateralUpsample(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 lowCoords = dispatchThreadId.xy;
+    if (any(lowCoords >= DOWNSAMPLED_SCREEN_SIZE))
+        return;
+
+    const int2 maxLowCoords = int2(DOWNSAMPLED_SCREEN_SIZE) - 1;
+    int2 p = int2(lowCoords);
+    int2 pLeft = clamp(p + int2(-1, 0), int2(0, 0), maxLowCoords);
+    int2 pDown = clamp(p + int2(0, -1), int2(0, 0), maxLowCoords);
+    int2 pDiagonal = clamp(p + int2(-1, -1), int2(0, 0), maxLowCoords);
+
+    half4 current = half4(LOAD_TEXTURE2D_X_LOD(_BlitTexture, p, 0));
+    half4 left = half4(LOAD_TEXTURE2D_X_LOD(_BlitTexture, pLeft, 0));
+    half4 down = half4(LOAD_TEXTURE2D_X_LOD(_BlitTexture, pDown, 0));
+    half4 diagonal = half4(LOAD_TEXTURE2D_X_LOD(_BlitTexture, pDiagonal, 0));
+
+    float4 lowAO = float4(GetPackedAO(current), GetPackedAO(left), GetPackedAO(diagonal), GetPackedAO(down));
+    float4 lowDepths = float4(GetPackedDepth(current), GetPackedDepth(left), GetPackedDepth(diagonal), GetPackedDepth(down));
+    uint2 outputBase = lowCoords << 1;
+
+    WriteUpsampledAO(outputBase, lowDepths, lowAO, float4(9.0, 3.0, 1.0, 3.0));
+    if (outputBase.x > 0)
+        WriteUpsampledAO(outputBase - uint2(1, 0), lowDepths, lowAO, float4(3.0, 9.0, 3.0, 1.0));
+    if (outputBase.y > 0)
+        WriteUpsampledAO(outputBase - uint2(0, 1), lowDepths, lowAO, float4(3.0, 1.0, 3.0, 9.0));
+    if (all(outputBase > 0))
+        WriteUpsampledAO(outputBase - uint2(1, 1), lowDepths, lowAO, float4(1.0, 3.0, 9.0, 3.0));
+
+    // HDRP relies on rounded-up dispatch threads outside the logical low-res extent
+    // for the last row/column. Write those border pixels explicitly instead.
+    bool lastColumn = lowCoords.x + 1 == DOWNSAMPLED_SCREEN_SIZE.x;
+    bool lastRow = lowCoords.y + 1 == DOWNSAMPLED_SCREEN_SIZE.y;
+    if (lastColumn)
+    {
+        WriteUpsampledAO(outputBase + uint2(1, 0), lowDepths.xxxx, lowAO.xxxx, float4(1.0, 1.0, 1.0, 1.0));
+        if (outputBase.y > 0)
+            WriteUpsampledAO(outputBase + uint2(1, 0) - uint2(0, 1), lowDepths.xxxx, lowAO.xxxx, float4(1.0, 1.0, 1.0, 1.0));
+    }
+    if (lastRow)
+    {
+        WriteUpsampledAO(outputBase + uint2(0, 1), lowDepths.xxxx, lowAO.xxxx, float4(1.0, 1.0, 1.0, 1.0));
+        if (outputBase.x > 0)
+            WriteUpsampledAO(outputBase + uint2(0, 1) - uint2(1, 0), lowDepths.xxxx, lowAO.xxxx, float4(1.0, 1.0, 1.0, 1.0));
+    }
+    if (lastColumn && lastRow)
+        WriteUpsampledAO(outputBase + uint2(1, 1), lowDepths.xxxx, lowAO.xxxx, float4(1.0, 1.0, 1.0, 1.0));
+}
+
+// ------------------------------------------------------------------
+// Final Blit Kernel (Non-AfterOpaque)
+// Inverts AO and writes to final output texture at full resolution
+// ------------------------------------------------------------------
+[numthreads(SSAO_GROUP_SIZE, SSAO_GROUP_SIZE, 1)]
+void FinalBlit(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 pixelCoords = dispatchThreadId.xy;
+    const uint2 fullResScreenSize = uint2(_SourceSize.xy);
+
+    if (any(pixelCoords >= fullResScreenSize))
+        return;
+
+    // UV is in full resolution space, sample from downsampled AO texture
+    float2 uv = (float2(pixelCoords) + 0.5) * _SourceSize.zw;
+
+    // Invert AO to match fragment shader behavior (FinalBlur: HALF_ONE - ao)
+    half ao = SSAO_COMMON_SAMPLE_BASEMAP_R(uv);
+    ao = HALF_ONE - ao;
+
+    _FinalOutput[pixelCoords] = half4(ao, ao, ao, HALF_ONE);
+}

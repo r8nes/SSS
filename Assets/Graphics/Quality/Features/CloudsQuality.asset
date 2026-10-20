@@ -1,0 +1,47 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 69a36b61287849ff8489ae9f5e25b641, type: 3}
+  m_Name: CloudsQuality
+  m_EditorClassIdentifier: 
+  _id:
+    _a: -658088574
+    _b: -1254339850
+    _c: -1245341670
+    _d: -1097719827
+  _displayName: Cloud Quality
+  _category: Atmosphere & Volumetrics
+  _rendererFeature: {fileID: 0}
+  _tiers:
+  - Id:
+      _a: 1134049436
+      _b: -358072047
+      _c: -1617386043
+      _d: 670112472
+    DisplayName: Low
+    Patch: {fileID: 11400000, guid: 63ba15e9e29a7f746891ba5378ea1c01, type: 2}
+    RendererFeature: 0
+  - Id:
+      _a: 1348069029
+      _b: -1519107425
+      _c: -2008075551
+      _d: 903200604
+    DisplayName: Medium
+    Patch: {fileID: 11400000, guid: 7d95a09745796aa4195cfe551748d98b, type: 2}
+    RendererFeature: 0
+  - Id:
+      _a: -1904382456
+      _b: 1257000106
+      _c: -1972030329
+      _d: -1134675998
+    DisplayName: High
+    Patch: {fileID: 11400000, guid: af334ea24ed51114a973346ff164055b, type: 2}
+    RendererFeature: 0

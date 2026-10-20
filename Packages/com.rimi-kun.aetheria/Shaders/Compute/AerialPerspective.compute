@@ -1,0 +1,179 @@
+#pragma kernel BuildLut
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+#define BUILDING_AERIAL_PERSPECTIVE_LUT 1
+#define ATMOSPHERE_PRECOMPUTE_ONLY 1
+#include "../../ShaderLibrary/Atmosphere/AtmosphereScattering.hlsl"
+
+RWTexture3D<float4> ATMOSPHERE_OUTPUT_TEXTURE;
+
+float4x4 _AerialPerspectiveInvViewProjection;
+float4 _AerialPerspectiveViewForwardWS;
+
+#define GROUP_SLICE_COUNT ATMOSPHERESHADERCONFIG_ATMOSPHERIC_SCATTERING_LUT_DEPTH
+
+groupshared float3 _SliceInscatter[GROUP_SLICE_COUNT];
+groupshared float3 _SliceTransmittance[GROUP_SLICE_COUNT];
+groupshared float3 _SliceScanInscatter[GROUP_SLICE_COUNT];
+groupshared float3 _SliceScanTransmittance[GROUP_SLICE_COUNT];
+groupshared float3 _SharedViewDirection;
+groupshared float3 _SharedViewPosition;
+groupshared float3 _SharedUpVector;
+groupshared float _SharedInverseForwardCos;
+groupshared float _SharedPathEnd;
+groupshared uint _SharedPathValid;
+
+float3 GetAerialPerspectiveViewDirWS(float2 uv)
+{
+    float3 farPlaneWS = ComputeWorldSpacePosition(
+        uv,
+        UNITY_RAW_FAR_CLIP_VALUE,
+        _AerialPerspectiveInvViewProjection);
+    return normalize(farPlaneWS - _CameraPosForAtmosphere);
+}
+
+[numthreads(1, 1, GROUP_SLICE_COUNT)]
+void BuildLut(uint3 groupId : SV_GroupID, uint sliceIndex : SV_GroupIndex)
+{
+    const uint sliceCount = GROUP_SLICE_COUNT;
+    float maxViewDistance = _AtmosphericScatteringMaxDistance;
+
+    if (maxViewDistance <= 1.0e-5f)
+    {
+        ATMOSPHERE_OUTPUT_TEXTURE[uint3(groupId.xy, sliceIndex)] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+        return;
+    }
+
+    if (sliceIndex == 0u)
+    {
+        float2 aerialUv = (float2(groupId.xy) + 0.5f) / _AtmosphericScatteringLutResolution.xy;
+        float3 viewDirWS = GetAerialPerspectiveViewDirWS(aerialUv);
+        float3 viewForwardWS = normalize(_AerialPerspectiveViewForwardWS.xyz);
+        float viewForwardCosAngle = max(dot(viewDirWS, viewForwardWS), 1.0e-5f);
+
+        float viewHeight = _BottomRadius;
+        float3 upVector = float3(0.0f, 1.0f, 0.0f);
+        float3 viewPosAtmo = upVector * viewHeight;
+        TransformToEarthSpace(
+            _CameraPosForAtmosphere,
+            _BottomRadius,
+            viewPosAtmo,
+            viewHeight,
+            upVector);
+
+        AtmospherePathEnd path;
+        path.pathEnd = 0.0f;
+        path.tBottom = -1.0f;
+        path.valid = false;
+        ResolveAtmospherePathEnd(viewPosAtmo, viewDirWS, path);
+
+        _SharedViewDirection = viewDirWS;
+        _SharedViewPosition = viewPosAtmo;
+        _SharedUpVector = upVector;
+        _SharedInverseForwardCos = rcp(viewForwardCosAngle);
+        _SharedPathEnd = path.pathEnd;
+        _SharedPathValid = path.valid ? 1u : 0u;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    float sliceUv = ((float)sliceIndex + 0.5f) / (float)sliceCount;
+    float viewDepth = DecodeAerialPerspectiveDepth(sliceUv, maxViewDistance, (float)sliceCount);
+    float previousViewDepth = 0.0f;
+
+    if (sliceIndex > 0u)
+    {
+        float previousSliceUv = ((float)(sliceIndex - 1u) + 0.5f) / (float)sliceCount;
+        previousViewDepth = DecodeAerialPerspectiveDepth(
+            previousSliceUv,
+            maxViewDistance,
+            (float)sliceCount);
+    }
+
+    float rayDistance = viewDepth * _SharedInverseForwardCos;
+    float previousRayDistance = previousViewDepth * _SharedInverseForwardCos;
+    float samplesPerSlice = max(
+        1.0f,
+        ceil((float)_PerPixelRaymarchSamples / (float)sliceCount));
+
+    SingleScatteringResult segment = IntegrateResolvedScatteredLuminanceSegment(
+        _SharedViewPosition,
+        _SharedViewDirection,
+        _SharedPathEnd,
+        _SharedPathValid != 0u,
+        1.0f,
+        samplesPerSlice,
+        previousRayDistance,
+        rayDistance,
+        true,
+        false,
+        1.0e30f);
+
+    _SliceInscatter[sliceIndex] = segment.L;
+    _SliceTransmittance[sliceIndex] = segment.Transmittance;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    bool sourceIsPrimary = true;
+    [unroll]
+    for (uint offset = 1u; offset < sliceCount; offset <<= 1u)
+    {
+        float3 ownInscatter = sourceIsPrimary
+            ? _SliceInscatter[sliceIndex]
+            : _SliceScanInscatter[sliceIndex];
+        float3 ownTransmittance = sourceIsPrimary
+            ? _SliceTransmittance[sliceIndex]
+            : _SliceScanTransmittance[sliceIndex];
+
+        float3 prefixInscatter = ownInscatter;
+        float3 prefixTransmittance = ownTransmittance;
+        if (sliceIndex >= offset)
+        {
+            uint previousIndex = sliceIndex - offset;
+            float3 previousInscatter = sourceIsPrimary
+                ? _SliceInscatter[previousIndex]
+                : _SliceScanInscatter[previousIndex];
+            float3 previousTransmittance = sourceIsPrimary
+                ? _SliceTransmittance[previousIndex]
+                : _SliceScanTransmittance[previousIndex];
+
+            prefixInscatter = previousInscatter + previousTransmittance * ownInscatter;
+            prefixTransmittance = previousTransmittance * ownTransmittance;
+        }
+
+        if (sourceIsPrimary)
+        {
+            _SliceScanInscatter[sliceIndex] = prefixInscatter;
+            _SliceScanTransmittance[sliceIndex] = prefixTransmittance;
+        }
+        else
+        {
+            _SliceInscatter[sliceIndex] = prefixInscatter;
+            _SliceTransmittance[sliceIndex] = prefixTransmittance;
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+        sourceIsPrimary = !sourceIsPrimary;
+    }
+
+    float3 accumulatedInscatter = (sourceIsPrimary
+        ? _SliceInscatter[sliceIndex]
+        : _SliceScanInscatter[sliceIndex]) * _IntensityMultiplier;
+    float3 artisticInscatter = ApplyArtisticSky(
+        accumulatedInscatter,
+        _SharedViewDirection,
+        _SharedUpVector);
+    accumulatedInscatter = lerp(
+        accumulatedInscatter,
+        artisticInscatter,
+        _SkyArtisticAffectEnvironment);
+
+    float3 accumulatedTransmittance = saturate(sourceIsPrimary
+        ? _SliceTransmittance[sliceIndex]
+        : _SliceScanTransmittance[sliceIndex]);
+    float scalarTransmittance = dot(accumulatedTransmittance, 1.0f / 3.0f);
+    
+    ATMOSPHERE_OUTPUT_TEXTURE[uint3(groupId.xy, sliceIndex)] =
+        float4(accumulatedInscatter, scalarTransmittance);
+}

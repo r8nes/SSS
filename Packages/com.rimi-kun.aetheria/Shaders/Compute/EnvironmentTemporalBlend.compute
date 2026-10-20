@@ -1,0 +1,35 @@
+#pragma kernel BlendLightingCubemap
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/GlobalSamplers.hlsl"
+#include "../../ShaderLibrary/Common/EnvironmentCubemap.hlsl"
+
+TextureCube _PreviousLightingCubemap;
+TextureCube _TargetLightingCubemap;
+RWTexture2DArray<float3> _Output;
+
+float _LightingBlendFactor;
+int _LightingMipResolution;
+int _LightingMipLevel;
+
+[numthreads(8, 8, 1)]
+void BlendLightingCubemap(uint3 coord : SV_DispatchThreadID)
+{
+    if (coord.z >= 6u || any(coord.xy >= (uint)_LightingMipResolution))
+        return;
+
+    float3 direction = CubeFaceTexelDirection(
+        coord.z,
+        coord.xy,
+        (uint)_LightingMipResolution);
+    float3 previous = _PreviousLightingCubemap.SampleLevel(
+        sampler_LinearClamp,
+        direction,
+        (float)_LightingMipLevel).rgb;
+    float3 target = _TargetLightingCubemap.SampleLevel(
+        sampler_LinearClamp,
+        direction,
+        (float)_LightingMipLevel).rgb;
+    _Output[coord] = lerp(previous, target, _LightingBlendFactor);
+}

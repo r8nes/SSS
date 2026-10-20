@@ -1,0 +1,302 @@
+#pragma only_renderers d3d11 vulkan
+#pragma target 5.0
+
+#pragma kernel FindVerticalDisplacementFlat WATER_EVALUATION_FLAT
+#pragma kernel FindVerticalDisplacement WATER_EVALUATION_NO_MASK WATER_EVALUATION_NO_CURRENT
+#pragma kernel FindVerticalDisplacementMask WATER_EVALUATION_NO_CURRENT
+#pragma kernel FindVerticalDisplacementCurrent WATER_EVALUATION_NO_MASK
+#pragma kernel FindVerticalDisplacementCurrentMask
+#pragma kernel BuoyancyFlat WATER_EVALUATION_FLAT WATER_BUOYANCY_QUERY
+#pragma kernel Buoyancy WATER_EVALUATION_NO_MASK WATER_EVALUATION_NO_CURRENT WATER_BUOYANCY_QUERY IGNORE_WATER_FADE
+#pragma kernel BuoyancyMask WATER_EVALUATION_NO_CURRENT WATER_BUOYANCY_QUERY IGNORE_WATER_FADE
+#pragma kernel BuoyancyCurrent WATER_EVALUATION_NO_MASK WATER_BUOYANCY_QUERY IGNORE_WATER_FADE
+#pragma kernel BuoyancyCurrentMask WATER_BUOYANCY_QUERY IGNORE_WATER_FADE
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+RWStructuredBuffer<float> _WaterCameraHeightBufferRW;
+float3 _WaterEvaluationTargetPositionOS;
+
+struct WaterBuoyancyGpuQuery
+{
+    float3 targetPositionWS;
+    float tolerance;
+    float3 startPositionWS;
+    uint maxIterations;
+};
+
+struct WaterBuoyancyGpuResult
+{
+    float3 targetPositionWS;
+    uint success;
+    float3 projectedPositionWS;
+    float horizontalError;
+    float3 normalWS;
+    uint iterationCount;
+    float3 searchPositionWS;
+    float searchPadding;
+    float3 currentDirectionWS;
+    float currentPadding;
+};
+
+StructuredBuffer<WaterBuoyancyGpuQuery> _WaterBuoyancyQueries;
+RWStructuredBuffer<WaterBuoyancyGpuResult> _WaterBuoyancyResultsRW;
+uint _WaterBuoyancyQueryOffset;
+uint _WaterBuoyancyQueryCount;
+float4x4 _WaterBuoyancyWaterToWorld;
+float4x4 _WaterBuoyancyWorldToWater;
+float _WaterBuoyancyNormalEpsilon;
+float3 _WaterBuoyancyBaseCurrentDirectionWS;
+
+#if !defined(WATER_EVALUATION_FLAT)
+#define WATER_EVALUATION_DISPLACEMENT_ONLY 1
+#include "../../Core/WaterShaderVariables.cs.hlsl"
+#include "../Common/WaterSurfaceSampling.hlsl"
+
+#define WATER_EVALUATION_ITERATION_COUNT 8
+#define WATER_EVALUATION_DISTANCE_THRESHOLD 0.001
+
+struct WaterProjectionSample
+{
+    float2 offset;
+    float distance;
+    float3 verticalDisplacements;
+};
+
+WaterProjectionSample EvaluateWaterProjectionSample(float3 currentPositionOS, float3 targetPositionOS)
+{
+    float2 horizontalDisplacement;
+    float3 verticalDisplacements;
+    EvaluateWaterSimulationDisplacement(currentPositionOS, horizontalDisplacement, verticalDisplacements);
+
+    WaterProjectionSample sample;
+    sample.offset = currentPositionOS.xz + horizontalDisplacement - targetPositionOS.xz;
+    sample.distance = length(sample.offset);
+    sample.verticalDisplacements = verticalDisplacements;
+    return sample;
+}
+
+void EvaluateDisplacedCameraHeight()
+{
+    float3 targetPositionOS = _WaterEvaluationTargetPositionOS;
+    WaterProjectionSample sample = EvaluateWaterProjectionSample(targetPositionOS, targetPositionOS);
+
+    float3 currentPositionOS = targetPositionOS;
+    float3 currentVertical = sample.verticalDisplacements;
+    float2 step = sample.offset;
+    float currentError = sample.distance;
+    uint stepCount = 0u;
+
+    while (stepCount < WATER_EVALUATION_ITERATION_COUNT && currentError >= WATER_EVALUATION_DISTANCE_THRESHOLD)
+    {
+        float3 candidate = currentPositionOS - float3(step.x, 0.0, step.y);
+        WaterProjectionSample candidateSample = EvaluateWaterProjectionSample(candidate, targetPositionOS);
+        if (candidateSample.distance < currentError)
+        {
+            currentPositionOS = candidate;
+            currentVertical = candidateSample.verticalDisplacements;
+            step = candidateSample.offset;
+            currentError = candidateSample.distance;
+        }
+        else
+        {
+            step *= 0.25;
+        }
+        ++stepCount;
+    }
+
+    float displacedHeight = currentVertical.x + currentVertical.y + currentVertical.z;
+    _WaterCameraHeightBufferRW[0] = targetPositionOS.y - displacedHeight;
+    _WaterCameraHeightBufferRW[1] = currentError;
+    _WaterCameraHeightBufferRW[2] = (float)stepCount;
+    _WaterCameraHeightBufferRW[3] = 0.0;
+}
+
+float EvaluateBuoyancyHeight(float3 positionOS)
+{
+    float2 horizontalDisplacement;
+    float3 verticalDisplacements;
+    EvaluateWaterSimulationDisplacement(positionOS, horizontalDisplacement, verticalDisplacements);
+    return verticalDisplacements.x + verticalDisplacements.y + verticalDisplacements.z;
+}
+
+float3 EvaluateBuoyancyNormal(float3 positionOS)
+{
+    float epsilon = max(_WaterBuoyancyNormalEpsilon, 0.001);
+    float hL = EvaluateBuoyancyHeight(positionOS - float3(epsilon, 0.0, 0.0));
+    float hR = EvaluateBuoyancyHeight(positionOS + float3(epsilon, 0.0, 0.0));
+    float hD = EvaluateBuoyancyHeight(positionOS - float3(0.0, 0.0, epsilon));
+    float hU = EvaluateBuoyancyHeight(positionOS + float3(0.0, 0.0, epsilon));
+    float2 gradient = float2(hR - hL, hU - hD) / (2.0 * epsilon);
+    float3 normalOS = normalize(float3(-gradient.x, 1.0, -gradient.y));
+    return normalize(mul((float3x3)_WaterBuoyancyWaterToWorld, normalOS));
+}
+
+float3 EvaluateBuoyancyCurrentDirection(float2 positionOS)
+{
+#if defined(WATER_EVALUATION_NO_CURRENT)
+    return _WaterBuoyancyBaseCurrentDirectionWS;
+#else
+    WaterCurrentData currentData;
+    EvaluateWaterCurrentData(positionOS, currentData);
+    float angle = _WaterReferenceOrientation.x + currentData.angle;
+    float sineDirection;
+    float cosineDirection;
+    sincos(angle, sineDirection, cosineDirection);
+    float3 directionWS = mul((float3x3)_WaterBuoyancyWaterToWorld, float3(cosineDirection, 0.0, sineDirection));
+    return dot(directionWS, directionWS) > 1e-8 ? normalize(directionWS) : _WaterBuoyancyBaseCurrentDirectionWS;
+#endif
+}
+
+void EvaluateBuoyancyProjected(WaterBuoyancyGpuQuery query, out WaterBuoyancyGpuResult result)
+{
+    result = (WaterBuoyancyGpuResult)0;
+    result.targetPositionWS = query.targetPositionWS;
+
+    float3 targetOS = mul(_WaterBuoyancyWorldToWater, float4(query.targetPositionWS, 1.0)).xyz;
+    float3 startOS = mul(_WaterBuoyancyWorldToWater, float4(query.startPositionWS, 1.0)).xyz;
+    WaterProjectionSample sample = EvaluateWaterProjectionSample(startOS, targetOS);
+    if (!isfinite(sample.distance))
+        return;
+
+    float2 step = sample.offset;
+    float3 currentPositionOS = startOS;
+    float3 currentVertical = sample.verticalDisplacements;
+    float currentError = sample.distance;
+    uint iterationCount = 0u;
+    float targetError = max(query.tolerance, 0.0);
+
+    while (iterationCount < query.maxIterations && currentError >= targetError)
+    {
+        float3 candidate = currentPositionOS - float3(step.x, 0.0, step.y);
+        WaterProjectionSample candidateSample = EvaluateWaterProjectionSample(candidate, targetOS);
+        if (!isfinite(candidateSample.distance))
+            return;
+
+        if (candidateSample.distance < currentError)
+        {
+            step = candidateSample.offset;
+            currentPositionOS = candidate;
+            currentVertical = candidateSample.verticalDisplacements;
+            currentError = candidateSample.distance;
+        }
+        else
+        {
+            step *= 0.5;
+        }
+        ++iterationCount;
+    }
+
+    float height = currentVertical.x + currentVertical.y + currentVertical.z;
+    float3 projectedOS = float3(targetOS.x, height, targetOS.z);
+    result.success = 1u;
+    result.projectedPositionWS = mul(_WaterBuoyancyWaterToWorld, float4(projectedOS, 1.0)).xyz;
+    result.horizontalError = currentError;
+    result.normalWS = EvaluateBuoyancyNormal(currentPositionOS);
+    result.iterationCount = iterationCount;
+    result.searchPositionWS = mul(_WaterBuoyancyWaterToWorld, float4(currentPositionOS, 1.0)).xyz;
+    result.currentDirectionWS = EvaluateBuoyancyCurrentDirection(currentPositionOS.xz);
+}
+#endif
+
+void EvaluateBuoyancyFlat(WaterBuoyancyGpuQuery query, out WaterBuoyancyGpuResult result)
+{
+    result = (WaterBuoyancyGpuResult)0;
+    float3 targetOS = mul(_WaterBuoyancyWorldToWater, float4(query.targetPositionWS, 1.0)).xyz;
+    float3 projectedOS = float3(targetOS.x, 0.0, targetOS.z);
+    float3 normalWS = mul((float3x3)_WaterBuoyancyWaterToWorld, float3(0.0, 1.0, 0.0));
+    result.targetPositionWS = query.targetPositionWS;
+    result.success = 1u;
+    result.projectedPositionWS = mul(_WaterBuoyancyWaterToWorld, float4(projectedOS, 1.0)).xyz;
+    result.normalWS = dot(normalWS, normalWS) > 1e-8 ? normalize(normalWS) : float3(0.0, 1.0, 0.0);
+    result.searchPositionWS = query.targetPositionWS;
+    result.currentDirectionWS = _WaterBuoyancyBaseCurrentDirectionWS;
+}
+
+void EvaluateBuoyancyThread(uint dispatchThreadId)
+{
+    if (dispatchThreadId >= _WaterBuoyancyQueryCount)
+        return;
+
+    uint queryIndex = _WaterBuoyancyQueryOffset + dispatchThreadId;
+    WaterBuoyancyGpuQuery query = _WaterBuoyancyQueries[queryIndex];
+    if (query.maxIterations == 0u)
+    {
+        WaterBuoyancyGpuResult inactiveResult = (WaterBuoyancyGpuResult)0;
+        _WaterBuoyancyResultsRW[queryIndex] = inactiveResult;
+        return;
+    }
+
+    WaterBuoyancyGpuResult result;
+#if defined(WATER_EVALUATION_FLAT)
+    EvaluateBuoyancyFlat(query, result);
+#else
+    EvaluateBuoyancyProjected(query, result);
+#endif
+    _WaterBuoyancyResultsRW[queryIndex] = result;
+}
+
+[numthreads(1, 1, 1)]
+void FindVerticalDisplacementFlat(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    _WaterCameraHeightBufferRW[0] = _WaterEvaluationTargetPositionOS.y;
+    _WaterCameraHeightBufferRW[1] = 0.0;
+    _WaterCameraHeightBufferRW[2] = 0.0;
+    _WaterCameraHeightBufferRW[3] = 0.0;
+}
+
+#if !defined(WATER_EVALUATION_FLAT)
+[numthreads(1, 1, 1)]
+void FindVerticalDisplacement(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateDisplacedCameraHeight();
+}
+
+[numthreads(1, 1, 1)]
+void FindVerticalDisplacementMask(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateDisplacedCameraHeight();
+}
+
+[numthreads(1, 1, 1)]
+void FindVerticalDisplacementCurrent(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateDisplacedCameraHeight();
+}
+
+[numthreads(1, 1, 1)]
+void FindVerticalDisplacementCurrentMask(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateDisplacedCameraHeight();
+}
+#endif
+
+[numthreads(64, 1, 1)]
+void BuoyancyFlat(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateBuoyancyThread(dispatchThreadId.x);
+}
+
+[numthreads(64, 1, 1)]
+void Buoyancy(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateBuoyancyThread(dispatchThreadId.x);
+}
+
+[numthreads(64, 1, 1)]
+void BuoyancyMask(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateBuoyancyThread(dispatchThreadId.x);
+}
+
+[numthreads(64, 1, 1)]
+void BuoyancyCurrent(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateBuoyancyThread(dispatchThreadId.x);
+}
+
+[numthreads(64, 1, 1)]
+void BuoyancyCurrentMask(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    EvaluateBuoyancyThread(dispatchThreadId.x);
+}

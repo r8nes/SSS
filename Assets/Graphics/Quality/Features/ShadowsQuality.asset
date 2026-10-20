@@ -1,0 +1,82 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 12ba9acc1a28462b849b810e05f05e01, type: 3}
+  m_Name: ShadowsQuality
+  m_EditorClassIdentifier: 
+  _id:
+    _a: -309106723
+    _b: 311970663
+    _c: -1444568374
+    _d: 668067894
+  _displayName: Shadow Quality
+  _category: Lighting
+  _tiers:
+  - Id:
+      _a: -326382
+      _b: -1279571696
+      _c: -1224714299
+      _d: -417178452
+    DisplayName: Very Low
+    ShadowDistance: 125
+    CascadeCount: 2
+    Cascade2Split: 0.25
+    Cascade3Split: {x: 0.1, y: 0.3}
+    Cascade4Split: {x: 0.05, y: 0.15, z: 0.38}
+    MainLightResolution: 1024
+    AdditionalLightResolution: 512
+    SoftShadowQuality: 1
+    ContactShadowsPatch: {fileID: 11400000, guid: 0964dcfc08e56044eb23d8ba0d416888, type: 2}
+  - Id:
+      _a: -263520012
+      _b: -1700443164
+      _c: -1596777854
+      _d: 1165022317
+    DisplayName: Low
+    ShadowDistance: 175
+    CascadeCount: 3
+    Cascade2Split: 0.25
+    Cascade3Split: {x: 0.1, y: 0.3}
+    Cascade4Split: {x: 0.05, y: 0.15, z: 0.38}
+    MainLightResolution: 2048
+    AdditionalLightResolution: 1024
+    SoftShadowQuality: 1
+    ContactShadowsPatch: {fileID: 11400000, guid: 4500bef6a7d0e44409bfff3147d182d7, type: 2}
+  - Id:
+      _a: -970986347
+      _b: 1577469454
+      _c: -1304449011
+      _d: -921363595
+    DisplayName: Medium
+    ShadowDistance: 250
+    CascadeCount: 4
+    Cascade2Split: 0.25
+    Cascade3Split: {x: 0.1, y: 0.3}
+    Cascade4Split: {x: 0.05, y: 0.15, z: 0.38}
+    MainLightResolution: 4096
+    AdditionalLightResolution: 2048
+    SoftShadowQuality: 2
+    ContactShadowsPatch: {fileID: 11400000, guid: 73d2e70efa102f84f986888029d02f29, type: 2}
+  - Id:
+      _a: -820805525
+      _b: -179224374
+      _c: -1805591983
+      _d: -1187331767
+    DisplayName: High
+    ShadowDistance: 300
+    CascadeCount: 4
+    Cascade2Split: 0.25
+    Cascade3Split: {x: 0.1, y: 0.3}
+    Cascade4Split: {x: 0.05, y: 0.15, z: 0.38}
+    MainLightResolution: 4096
+    AdditionalLightResolution: 4096
+    SoftShadowQuality: 3
+    ContactShadowsPatch: {fileID: 11400000, guid: cd828dafa5dedb146850224590182b2f, type: 2}

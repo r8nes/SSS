@@ -1,0 +1,49 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b9d40ca5e4ed4f59850d3ca4dacedad6, type: 3}
+  m_Name: TexturesQuality
+  m_EditorClassIdentifier: 
+  _id:
+    _a: 511750894
+    _b: -633647628
+    _c: -1584471458
+    _d: 1430685908
+  _displayName: Texture Quality
+  _category: Scene Detail
+  _tiers:
+  - Id:
+      _a: -349016991
+      _b: -1222423146
+      _c: -1416939954
+      _d: -969016821
+    DisplayName: Low
+    MipmapLimit: 2
+    StreamingMaxLevelReduction: 2
+    AnisotropicFiltering: 0
+  - Id:
+      _a: 2004524506
+      _b: 1227574723
+      _c: -1614256515
+      _d: -217862924
+    DisplayName: Medium
+    MipmapLimit: 1
+    StreamingMaxLevelReduction: 1
+    AnisotropicFiltering: 1
+  - Id:
+      _a: -77960458
+      _b: -1241953825
+      _c: -1140563699
+      _d: -2006057433
+    DisplayName: High
+    MipmapLimit: 0
+    StreamingMaxLevelReduction: 0
+    AnisotropicFiltering: 1

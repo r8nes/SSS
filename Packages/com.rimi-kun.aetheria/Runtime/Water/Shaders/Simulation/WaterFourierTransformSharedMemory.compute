@@ -1,0 +1,121 @@
+
+#pragma only_renderers d3d11
+
+#pragma kernel WaterRowFFT_64  FFT_ROW_KERNEL=WaterRowFFT_64 FFT_RESOLUTION=64  FFT_ROWS_PER_GROUP=8 FFT_RADIX4_STAGES=3 FFT_HAS_RADIX2=0
+#pragma kernel WaterRowFFT_128 FFT_ROW_KERNEL=WaterRowFFT_128 FFT_RESOLUTION=128 FFT_ROWS_PER_GROUP=4 FFT_RADIX4_STAGES=3 FFT_HAS_RADIX2=1
+#pragma kernel WaterRowFFT_256 FFT_ROW_KERNEL=WaterRowFFT_256 FFT_RESOLUTION=256 FFT_ROWS_PER_GROUP=2 FFT_RADIX4_STAGES=4 FFT_HAS_RADIX2=0
+#pragma kernel WaterRowFFTFinal_64  FFT_ROW_KERNEL=WaterRowFFTFinal_64 FFT_RESOLUTION=64  FFT_ROWS_PER_GROUP=8 FFT_RADIX4_STAGES=3 FFT_HAS_RADIX2=0 FFT_REAL_OUTPUT_ONLY=1
+#pragma kernel WaterRowFFTFinal_128 FFT_ROW_KERNEL=WaterRowFFTFinal_128 FFT_RESOLUTION=128 FFT_ROWS_PER_GROUP=4 FFT_RADIX4_STAGES=3 FFT_HAS_RADIX2=1 FFT_REAL_OUTPUT_ONLY=1
+#pragma kernel WaterRowFFTFinal_256 FFT_ROW_KERNEL=WaterRowFFTFinal_256 FFT_RESOLUTION=256 FFT_ROWS_PER_GROUP=2 FFT_RADIX4_STAGES=4 FFT_HAS_RADIX2=0 FFT_REAL_OUTPUT_ONLY=1
+#pragma kernel WaterTransposeComplex FFT_TRANSPOSE_COMPLEX_KERNEL=WaterTransposeComplex
+#pragma kernel WaterTransposeFinalize FFT_TRANSPOSE_FINAL_KERNEL=WaterTransposeFinalize
+
+#include "WaterFourierTransformCommon.hlsl"
+
+#if defined(FFT_ROW_KERNEL)
+
+groupshared float4 g_StockhamReal[2][512];
+groupshared float4 g_StockhamImaginary[2][512];
+
+FftComplex4 LoadStockhamValue(uint workspace, uint index)
+{
+    return CreateFftComplex4(g_StockhamReal[workspace][index], g_StockhamImaginary[workspace][index]);
+}
+
+void StoreStockhamValue(uint workspace, uint index, FftComplex4 value)
+{
+    g_StockhamReal[workspace][index] = value.realPart;
+    g_StockhamImaginary[workspace][index] = value.imaginaryPart;
+}
+
+[numthreads(128, 1, 1)]
+void FFT_ROW_KERNEL(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
+{
+
+    [unroll]
+    for (uint elementOffset = 0u; elementOffset < 512u; elementOffset += 128u)
+    {
+        uint sharedIndex = groupIndex + elementOffset;
+        uint rowInGroup = sharedIndex / FFT_RESOLUTION;
+        uint column = sharedIndex - rowInGroup * FFT_RESOLUTION;
+        uint row = groupID.y * FFT_ROWS_PER_GROUP + rowInGroup;
+        int2 texturePosition = int2(column, row);
+        g_StockhamReal[0][sharedIndex] = _FftRealInput[texturePosition];
+        g_StockhamImaginary[0][sharedIndex] = _FftImaginaryInput[texturePosition];
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    const uint butterfliesPerRow = FFT_RESOLUTION / 4u;
+    uint rowInGroup = groupIndex / butterfliesPerRow;
+    uint butterflyIndex = groupIndex - rowInGroup * butterfliesPerRow;
+    uint rowBase = rowInGroup * FFT_RESOLUTION;
+
+    uint sourceWorkspace = 0u;
+    uint destinationWorkspace = 1u;
+    uint subTransformSize = 1u;
+
+    [unroll]
+    for (uint stage = 0u; stage < FFT_RADIX4_STAGES; ++stage)
+    {
+        float phase = TWO_PI * (butterflyIndex % subTransformSize)
+            / (float)(subTransformSize * 4u);
+
+        FftComplex4 value0 = LoadStockhamValue(sourceWorkspace, rowBase + butterflyIndex);
+        FftComplex4 value1 = LoadStockhamValue(sourceWorkspace, rowBase + butterflyIndex + butterfliesPerRow);
+        FftComplex4 value2 = LoadStockhamValue(sourceWorkspace, rowBase + butterflyIndex + 2u * butterfliesPerRow);
+        FftComplex4 value3 = LoadStockhamValue(sourceWorkspace, rowBase + butterflyIndex + 3u * butterfliesPerRow);
+
+        ApplyInverseFftRadix4Twiddles(value1, value2, value3, phase);
+        InverseFft4(value0, value1, value2, value3);
+
+        uint destinationIndex = ExpandFftStockhamIndex(butterflyIndex, subTransformSize, 4u);
+        StoreStockhamValue(destinationWorkspace, rowBase + destinationIndex, value0);
+        StoreStockhamValue(destinationWorkspace, rowBase + destinationIndex + subTransformSize, value1);
+        StoreStockhamValue(destinationWorkspace, rowBase + destinationIndex + 2u * subTransformSize, value2);
+        StoreStockhamValue(destinationWorkspace, rowBase + destinationIndex + 3u * subTransformSize, value3);
+
+        GroupMemoryBarrierWithGroupSync();
+        uint temporaryWorkspace = sourceWorkspace;
+        sourceWorkspace = destinationWorkspace;
+        destinationWorkspace = temporaryWorkspace;
+        subTransformSize *= 4u;
+    }
+
+#if FFT_HAS_RADIX2
+
+    [unroll]
+    for (uint operation = 0u; operation < 2u; ++operation)
+    {
+        uint radix2Index = butterflyIndex + operation * butterfliesPerRow;
+        uint radix2Stride = FFT_RESOLUTION / 2u;
+        float phase = TWO_PI * (radix2Index % subTransformSize)
+            / (float)(subTransformSize * 2u);
+
+        FftComplex4 value0 = LoadStockhamValue(sourceWorkspace, rowBase + radix2Index);
+        FftComplex4 value1 = LoadStockhamValue(sourceWorkspace, rowBase + radix2Index + radix2Stride);
+        value1 = MultiplyFftComplex4ByPhase(value1, phase);
+        InverseFft2(value0, value1);
+
+        uint destinationIndex = ExpandFftStockhamIndex(radix2Index, subTransformSize, 2u);
+        StoreStockhamValue(destinationWorkspace, rowBase + destinationIndex, value0);
+        StoreStockhamValue(destinationWorkspace, rowBase + destinationIndex + subTransformSize, value1);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    sourceWorkspace = destinationWorkspace;
+#endif
+
+    [unroll]
+    for (uint outputElementOffset = 0u; outputElementOffset < 512u; outputElementOffset += 128u)
+    {
+        uint sharedIndex = groupIndex + outputElementOffset;
+        uint outputRowInGroup = sharedIndex / FFT_RESOLUTION;
+        uint outputColumn = sharedIndex - outputRowInGroup * FFT_RESOLUTION;
+        uint outputRow = groupID.y * FFT_ROWS_PER_GROUP + outputRowInGroup;
+        int2 outputPosition = int2(outputColumn, outputRow);
+        _FftRealOutput[outputPosition] = g_StockhamReal[sourceWorkspace][sharedIndex];
+        #if !defined(FFT_REAL_OUTPUT_ONLY)
+        _FftImaginaryOutput[outputPosition] = g_StockhamImaginary[sourceWorkspace][sharedIndex];
+        #endif
+    }
+}
+#endif

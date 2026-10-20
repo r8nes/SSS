@@ -1,0 +1,71 @@
+#pragma kernel FilterVolumetricFog
+#pragma target 5.0
+
+#include "../../../Runtime/Data/ShaderConfigs/VolumetricShaderConfig.cs.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+Texture3D<float4> _VolumetricFilterInput;
+RWTexture3D<float4> _VolumetricFilterOutput;
+float4 _VolumetricGridParams;
+
+#define FILTER_GROUP_SIZE_X VOLUMETRICSHADERCONFIG_FILTER_THREAD_GROUP_SIZE_X
+#define FILTER_GROUP_SIZE_Y VOLUMETRICSHADERCONFIG_FILTER_THREAD_GROUP_SIZE_Y
+#define FILTER_EXTENT_X (FILTER_GROUP_SIZE_X + 2)
+#define FILTER_EXTENT_Y (FILTER_GROUP_SIZE_Y + 2)
+#define FILTER_CACHE_SIZE (FILTER_EXTENT_X * FILTER_EXTENT_Y)
+#define FILTER_THREAD_COUNT (FILTER_GROUP_SIZE_X * FILTER_GROUP_SIZE_Y)
+
+groupshared float4 _FilterCache[FILTER_CACHE_SIZE];
+
+void PrefetchFilterSample(uint sampleId, uint2 groupOrigin, uint sliceIndex)
+{
+    int2 viewportMax = max(int2(_VolumetricGridParams.xy) - 1, int2(0, 0));
+    int2 cacheOffset = int2(sampleId % FILTER_EXTENT_X, sampleId / FILTER_EXTENT_X);
+    int2 sampleCoord = clamp(int2(groupOrigin) - 1 + cacheOffset, int2(0, 0), viewportMax);
+    _FilterCache[sampleId] = _VolumetricFilterInput.Load(int4(sampleCoord, sliceIndex, 0));
+}
+
+// Normalized separable weights for exp(-r^2).
+static const float FILTER_OUTER_WEIGHT = 0.21194155761708547;
+static const float FILTER_CENTER_WEIGHT = 0.5761168847658291;
+
+[numthreads(FILTER_GROUP_SIZE_X, FILTER_GROUP_SIZE_Y, 1)]
+void FilterVolumetricFog(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uint groupIndex : SV_GroupIndex,
+    uint2 groupId : SV_GroupID,
+    uint2 groupThreadId : SV_GroupThreadID)
+{
+    uint2 groupOrigin = groupId * uint2(FILTER_GROUP_SIZE_X, FILTER_GROUP_SIZE_Y);
+
+    [unroll]
+    for (uint sampleId = groupIndex; sampleId < FILTER_CACHE_SIZE; sampleId += FILTER_THREAD_COUNT)
+        PrefetchFilterSample(sampleId, groupOrigin, dispatchThreadId.z);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (dispatchThreadId.x >= (uint)_VolumetricGridParams.x ||
+        dispatchThreadId.y >= (uint)_VolumetricGridParams.y ||
+        dispatchThreadId.z >= (uint)_VolumetricGridParams.z)
+        return;
+
+    int2 cacheCenter = int2(groupThreadId) + 1;
+    uint centerIndex = (uint)(cacheCenter.x + cacheCenter.y * FILTER_EXTENT_X);
+
+    float4 top =
+        _FilterCache[centerIndex - FILTER_EXTENT_X] * FILTER_CENTER_WEIGHT +
+        (_FilterCache[centerIndex - FILTER_EXTENT_X - 1] +
+         _FilterCache[centerIndex - FILTER_EXTENT_X + 1]) * FILTER_OUTER_WEIGHT;
+    float4 middle =
+        _FilterCache[centerIndex] * FILTER_CENTER_WEIGHT +
+        (_FilterCache[centerIndex - 1] +
+         _FilterCache[centerIndex + 1]) * FILTER_OUTER_WEIGHT;
+    float4 bottom =
+        _FilterCache[centerIndex + FILTER_EXTENT_X] * FILTER_CENTER_WEIGHT +
+        (_FilterCache[centerIndex + FILTER_EXTENT_X - 1] +
+         _FilterCache[centerIndex + FILTER_EXTENT_X + 1]) * FILTER_OUTER_WEIGHT;
+
+    _VolumetricFilterOutput[dispatchThreadId] =
+        middle * FILTER_CENTER_WEIGHT +
+        (top + bottom) * FILTER_OUTER_WEIGHT;
+}

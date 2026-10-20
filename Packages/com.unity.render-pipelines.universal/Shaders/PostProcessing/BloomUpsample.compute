@@ -1,0 +1,267 @@
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2 webgpu
+#pragma kernel KMainLowQuality LOW_QUALITY
+#pragma kernel KMainHighQuality HIGH_QUALITY
+#pragma kernel KMainTail2LowQuality LOW_QUALITY TAIL_TWO_LEVELS
+#pragma kernel KMainTail2HighQuality HIGH_QUALITY TAIL_TWO_LEVELS
+#pragma kernel KResolve
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Filtering.hlsl"
+
+Texture2D<float4> _InputLowTexture;
+SamplerState sampler_LinearClamp;
+RWTexture2D<float4> _InputHighOutputTexture;
+RWTexture2D<float4> _BloomTailHighOutputTexture;
+RWTexture2D<float4> _OutputTexture;
+
+CBUFFER_START(cb0)
+    float4 _Params;
+    float4 _BloomBicubicParams;
+    float4 _TexelSize;
+    float4 _BloomTailSize;
+CBUFFER_END
+
+#define Scatter _Params.x
+#define GROUP_SIZE_X 16
+#define GROUP_SIZE_Y 8
+#define GROUP_THREAD_COUNT 128
+
+#if defined(TAIL_TWO_LEVELS)
+groupshared uint gs_tailRG[GROUP_THREAD_COUNT];
+groupshared uint gs_tailB[GROUP_THREAD_COUNT];
+#endif
+
+
+uint PackHalf2(float a, float b)
+{
+    return f32tof16(a) | (f32tof16(b) << 16);
+}
+
+float2 UnpackHalf2(uint packed)
+{
+    return (float2)float2(f16tof32(packed), f16tof32(packed >> 16));
+}
+
+#if defined(TAIL_TWO_LEVELS)
+void StoreTail(uint index, float3 value)
+{
+    gs_tailRG[index] = PackHalf2(value.r, value.g);
+    gs_tailB[index] = f32tof16(value.b);
+}
+
+float3 LoadTail(uint index)
+{
+    float2 rg = UnpackHalf2(gs_tailRG[index]);
+    float b = (float)f16tof32(gs_tailB[index]);
+    return float3(rg, b);
+}
+#endif
+
+
+float3 SampleLowTexture(float2 uv)
+{
+#if defined(LOW_QUALITY)
+    float2 minUV = _BloomBicubicParams.zw * 0.5;
+    return (float3)_InputLowTexture.SampleLevel(sampler_LinearClamp, clamp(uv, minUV, 1.0 - minUV), 0.0).rgb;
+#else
+    return (float3)SampleTexture2DBicubic(
+        TEXTURE2D_ARGS(_InputLowTexture, sampler_LinearClamp), uv, _BloomBicubicParams, (1.0).xx, 0).rgb;
+#endif
+}
+
+
+// Final quarter-to-float reconstruction. A separable [1 2 1]/4 tent on each
+// axis is collapsed exactly into four bilinear fetches at +/- float a low-res
+// texel. At a 2x reconstruction ratio its one-axis second moment is 2 in
+// float-resolution pixels, matching the original 9-tap binomial Gaussian.
+float3 SampleResolveTent(float2 uv)
+{
+    float2 halfTexel = _BloomBicubicParams.zw * 0.5;
+    float2 minUV = _BloomBicubicParams.zw * 0.5;
+    float2 maxUV = 1.0 - minUV;
+
+    float3 result = (float3)_InputLowTexture.SampleLevel(sampler_LinearClamp, clamp(uv + float2(-halfTexel.x, -halfTexel.y), minUV, maxUV), 0.0).rgb;
+    result += (float3)_InputLowTexture.SampleLevel(sampler_LinearClamp, clamp(uv + float2( halfTexel.x, -halfTexel.y), minUV, maxUV), 0.0).rgb;
+    result += (float3)_InputLowTexture.SampleLevel(sampler_LinearClamp, clamp(uv + float2(-halfTexel.x,  halfTexel.y), minUV, maxUV), 0.0).rgb;
+    result += (float3)_InputLowTexture.SampleLevel(sampler_LinearClamp, clamp(uv + float2( halfTexel.x,  halfTexel.y), minUV, maxUV), 0.0).rgb;
+    return result * (float)0.25;
+}
+
+float3 UpsamplePixel(uint2 pixelCoord, float4 outputSize)
+{
+    float2 uv = (float2(pixelCoord) + 0.5) * outputSize.zw;
+    float3 highResolution = (float3)_InputHighOutputTexture[pixelCoord].rgb;
+    float3 lowResolution = SampleLowTexture(uv);
+    return lerp(highResolution, lowResolution, (float)Scatter);
+}
+
+#if defined(TAIL_TWO_LEVELS)
+float3 SampleTailLinear(float2 uv, uint2 size)
+{
+    size = max(size, 1u);
+    uv = clamp(uv, 0.0, 1.0);
+
+    float2 position = uv * float2(size) - 0.5;
+    int2 baseCoord = int2(floor(position));
+    float2 f = frac(position);
+    int2 maxCoord = int2(size) - 1;
+
+    int2 p00 = clamp(baseCoord, int2(0, 0), maxCoord);
+    int2 p10 = clamp(baseCoord + int2(1, 0), int2(0, 0), maxCoord);
+    int2 p01 = clamp(baseCoord + int2(0, 1), int2(0, 0), maxCoord);
+    int2 p11 = clamp(baseCoord + int2(1, 1), int2(0, 0), maxCoord);
+
+    float3 c00 = LoadTail((uint)p00.y * GROUP_SIZE_X + (uint)p00.x);
+    float3 c10 = LoadTail((uint)p10.y * GROUP_SIZE_X + (uint)p10.x);
+    float3 c01 = LoadTail((uint)p01.y * GROUP_SIZE_X + (uint)p01.x);
+    float3 c11 = LoadTail((uint)p11.y * GROUP_SIZE_X + (uint)p11.x);
+
+    float3 top = lerp(c00, c10, (float)f.x);
+    float3 bottom = lerp(c01, c11, (float)f.x);
+    return lerp(top, bottom, (float)f.y);
+}
+
+float2 BSpline3LeftmostLocal(float2 x)
+{
+    return 0.16666667 * x * x * x;
+}
+
+float2 BSpline3MiddleLeftLocal(float2 x)
+{
+    return 0.16666667 + x * (0.5 + x * (0.5 - x * 0.5));
+}
+
+float2 BSpline3MiddleRightLocal(float2 x)
+{
+    return 0.66666667 + x * (-1.0 + 0.5 * x) * x;
+}
+
+float2 BSpline3RightmostLocal(float2 x)
+{
+    return 0.16666667 + x * (-0.5 + x * (0.5 - x * 0.16666667));
+}
+
+void BicubicFilterLocal(float2 fracCoord, out float2 weights[2], out float2 offsets[2])
+{
+    float2 r = BSpline3RightmostLocal(fracCoord);
+    float2 mr = BSpline3MiddleRightLocal(fracCoord);
+    float2 ml = BSpline3MiddleLeftLocal(fracCoord);
+    float2 l = 1.0 - mr - ml - r;
+
+    weights[0] = r + mr;
+    weights[1] = ml + l;
+    offsets[0] = -1.0 + mr * rcp(weights[0]);
+    offsets[1] = 1.0 + l * rcp(weights[1]);
+}
+
+float3 SampleTailBicubic(float2 uv, uint2 size)
+{
+    size = max(size, 1u);
+    float2 sizeF = float2(size);
+    float2 invSize = rcp(sizeF);
+    float2 xy = uv * sizeF + 0.5;
+    float2 ic = floor(xy);
+    float2 fc = frac(xy);
+    float2 weights[2];
+    float2 offsets[2];
+    BicubicFilterLocal(fc, weights, offsets);
+
+    float2 uv00 = (ic + float2(offsets[0].x, offsets[0].y) - 0.5) * invSize;
+    float2 uv10 = (ic + float2(offsets[1].x, offsets[0].y) - 0.5) * invSize;
+    float2 uv01 = (ic + float2(offsets[0].x, offsets[1].y) - 0.5) * invSize;
+    float2 uv11 = (ic + float2(offsets[1].x, offsets[1].y) - 0.5) * invSize;
+
+    float3 top = SampleTailLinear(uv00, size) * (float)weights[0].x +
+        SampleTailLinear(uv10, size) * (float)weights[1].x;
+    float3 bottom = SampleTailLinear(uv01, size) * (float)weights[0].x +
+        SampleTailLinear(uv11, size) * (float)weights[1].x;
+    return top * (float)weights[0].y + bottom * (float)weights[1].y;
+}
+
+float3 SampleTailForSecondLevel(float2 uv, uint2 size)
+{
+#if defined(LOW_QUALITY)
+    float2 minUV = 0.5 / float2(max(size, 1u));
+    return SampleTailLinear(clamp(uv, minUV, 1.0 - minUV), size);
+#else
+    return SampleTailBicubic(uv, size);
+#endif
+}
+#endif
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KMainLowQuality(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= uint2(_TexelSize.xy)))
+        return;
+
+    float3 output = UpsamplePixel(dispatchThreadId.xy, _TexelSize);
+    _InputHighOutputTexture[dispatchThreadId.xy] = float4((float3)output, 1.0);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KMainHighQuality(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= uint2(_TexelSize.xy)))
+        return;
+
+    float3 output = UpsamplePixel(dispatchThreadId.xy, _TexelSize);
+    _InputHighOutputTexture[dispatchThreadId.xy] = float4((float3)output, 1.0);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KResolve(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= uint2(_TexelSize.xy)))
+        return;
+
+    float2 uv = (float2(dispatchThreadId.xy) + 0.5) * _TexelSize.zw;
+    float3 output = SampleResolveTent(uv);
+    _OutputTexture[dispatchThreadId.xy] = float4((float3)output, 1.0);
+}
+
+#if defined(TAIL_TWO_LEVELS)
+void UpsampleTailTwoLevels(uint2 groupThreadId)
+{
+    uint firstIndex = groupThreadId.y * GROUP_SIZE_X + groupThreadId.x;
+    uint2 firstSize = max(uint2(_TexelSize.xy), 1u);
+
+    if (all(groupThreadId < firstSize))
+    {
+        float3 firstOutput = UpsamplePixel(groupThreadId, _TexelSize);
+        _InputHighOutputTexture[groupThreadId] = float4((float3)firstOutput, 1.0);
+        StoreTail(firstIndex, firstOutput);
+    }
+    else
+    {
+        StoreTail(firstIndex, (float3)0.0);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    uint2 secondSize = max(uint2(_BloomTailSize.xy), 1u);
+    uint secondPixelCount = secondSize.x * secondSize.y;
+
+    for (uint index = firstIndex; index < secondPixelCount; index += GROUP_THREAD_COUNT)
+    {
+        uint2 pixelCoord = uint2(index % secondSize.x, index / secondSize.x);
+        float2 uv = (float2(pixelCoord) + 0.5) * _BloomTailSize.zw;
+        float3 highResolution = (float3)_BloomTailHighOutputTexture[pixelCoord].rgb;
+        float3 lowResolution = SampleTailForSecondLevel(uv, firstSize);
+        float3 output = lerp(highResolution, lowResolution, (float)Scatter);
+        _BloomTailHighOutputTexture[pixelCoord] = float4((float3)output, 1.0);
+    }
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KMainTail2LowQuality(uint2 groupThreadId : SV_GroupThreadID)
+{
+    UpsampleTailTwoLevels(groupThreadId);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KMainTail2HighQuality(uint2 groupThreadId : SV_GroupThreadID)
+{
+    UpsampleTailTwoLevels(groupThreadId);
+}
+#endif

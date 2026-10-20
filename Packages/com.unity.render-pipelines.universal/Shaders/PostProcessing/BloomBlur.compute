@@ -1,0 +1,257 @@
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2 webgpu
+#pragma kernel KDownsample
+#pragma kernel KDownsample2x FILTER_LDS_2X
+#pragma kernel KDownsampleTail2 TAIL_TWO_LEVELS
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+
+Texture2D<float4> _InputTexture;
+SamplerState sampler_LinearClamp;
+RWTexture2D<float4> _OutputTexture;
+RWTexture2D<float4> _BloomTailOutputTexture;
+
+CBUFFER_START(cb0)
+    float4 _TexelSize;
+    float4 _SourceSize;
+    float4 _BloomTailSize;
+CBUFFER_END
+
+#define GROUP_SIZE_X 16
+#define GROUP_SIZE_Y 16
+#define GROUP_THREAD_COUNT 256
+#define FILTER_TILE_WIDTH 36
+#define FILTER_TILE_COUNT (FILTER_TILE_WIDTH * FILTER_TILE_WIDTH)
+
+#if defined(FILTER_LDS_2X)
+    #define LDS_STORAGE_COUNT FILTER_TILE_COUNT
+#else
+    #define LDS_STORAGE_COUNT GROUP_THREAD_COUNT
+#endif
+
+groupshared uint gs_storageRG[LDS_STORAGE_COUNT];
+groupshared uint gs_storageB[LDS_STORAGE_COUNT];
+
+#if defined(FILTER_LDS_2X)
+static const float kFilterWeights[36] =
+{
+    1.0 / 128.0, 1.0 / 128.0, 2.0 / 128.0, 2.0 / 128.0, 1.0 / 128.0, 1.0 / 128.0,
+    1.0 / 128.0, 5.0 / 128.0, 6.0 / 128.0, 6.0 / 128.0, 5.0 / 128.0, 1.0 / 128.0,
+    2.0 / 128.0, 6.0 / 128.0, 8.0 / 128.0, 8.0 / 128.0, 6.0 / 128.0, 2.0 / 128.0,
+    2.0 / 128.0, 6.0 / 128.0, 8.0 / 128.0, 8.0 / 128.0, 6.0 / 128.0, 2.0 / 128.0,
+    1.0 / 128.0, 5.0 / 128.0, 6.0 / 128.0, 6.0 / 128.0, 5.0 / 128.0, 1.0 / 128.0,
+    1.0 / 128.0, 1.0 / 128.0, 2.0 / 128.0, 2.0 / 128.0, 1.0 / 128.0, 1.0 / 128.0
+};
+#endif
+
+uint PackHalf2(float a, float b)
+{
+    return f32tof16(a) | (f32tof16(b) << 16);
+}
+
+float2 UnpackHalf2(uint packed)
+{
+    return (float2)float2(f16tof32(packed), f16tof32(packed >> 16));
+}
+
+void StoreTail(uint storageIndex, float3 value)
+{
+    gs_storageRG[storageIndex] = PackHalf2(value.r, value.g);
+    gs_storageB[storageIndex] = f32tof16(value.b);
+}
+
+float3 LoadTail(uint storageIndex)
+{
+    float2 rg = UnpackHalf2(gs_storageRG[storageIndex]);
+    float b = (float)f16tof32(gs_storageB[storageIndex]);
+    return float3(rg, b);
+}
+
+#if defined(FILTER_LDS_2X)
+float3 LoadFilterTile(uint2 coord)
+{
+    uint storageIndex = coord.y * FILTER_TILE_WIDTH + coord.x;
+    return LoadTail(storageIndex);
+}
+
+void LoadFilterTile2x(uint2 groupThreadId, uint2 groupId)
+{
+    uint linearIndex = groupThreadId.y * GROUP_SIZE_X + groupThreadId.x;
+    int2 sourceSize = max(int2(_SourceSize.xy), int2(1, 1));
+    int2 sourceBase = int2(groupId) * int2(GROUP_SIZE_X * 2, GROUP_SIZE_Y * 2) - int2(2, 2);
+
+    for (uint loadIndex = linearIndex; loadIndex < FILTER_TILE_COUNT; loadIndex += GROUP_THREAD_COUNT)
+    {
+        uint2 tileCoord = uint2(loadIndex % FILTER_TILE_WIDTH, loadIndex / FILTER_TILE_WIDTH);
+        int2 sourceCoord = clamp(sourceBase + int2(tileCoord), int2(0, 0), sourceSize - 1);
+        float3 value = (float3)_InputTexture.Load(int3(sourceCoord, 0)).rgb;
+        StoreTail(loadIndex, value);
+    }
+}
+
+float3 Downsample13FromTile(uint2 localOutputCoord)
+{
+    uint2 baseCoord = localOutputCoord * 2u;
+
+    float3 result = (float3)0.0;
+    [unroll]
+    for (uint y = 0; y < 6; ++y)
+    {
+        [unroll]
+        for (uint x = 0; x < 6; ++x)
+        {
+            result += LoadFilterTile(baseCoord + uint2(x, y)) * (float)kFilterWeights[y * 6 + x];
+        }
+    }
+    return result;
+}
+
+#endif
+
+float3 SampleInput(float2 uv)
+{
+    float2 minUV = _SourceSize.zw * 0.5;
+    uv = clamp(uv, minUV, 1.0 - minUV);
+    return (float3)_InputTexture.SampleLevel(sampler_LinearClamp, uv, 0.0).rgb;
+}
+
+// 13-tap bloom reduction pattern used by the pyramidal post-processing family
+// described by Jimenez et al. The weights sum to one and the bilinear taps
+// provide substantially better low-pass behavior than the former 5-tap cross.
+float3 Downsample13(float2 uv, float2 sourceTexel)
+{
+    float2 o1 = sourceTexel;
+    float2 o2 = sourceTexel * 2.0;
+
+    float3 a = SampleInput(uv + float2(-o2.x,  o2.y));
+    float3 b = SampleInput(uv + float2( 0.0,   o2.y));
+    float3 c = SampleInput(uv + float2( o2.x,  o2.y));
+    float3 d = SampleInput(uv + float2(-o2.x,  0.0));
+    float3 e = SampleInput(uv);
+    float3 f = SampleInput(uv + float2( o2.x,  0.0));
+    float3 g = SampleInput(uv + float2(-o2.x, -o2.y));
+    float3 h = SampleInput(uv + float2( 0.0,  -o2.y));
+    float3 i = SampleInput(uv + float2( o2.x, -o2.y));
+    float3 j = SampleInput(uv + float2(-o1.x,  o1.y));
+    float3 k = SampleInput(uv + float2( o1.x,  o1.y));
+    float3 l = SampleInput(uv + float2(-o1.x, -o1.y));
+    float3 m = SampleInput(uv + float2( o1.x, -o1.y));
+
+    float3 result = e * (float)0.125;
+    result += (a + c + g + i) * (float)0.03125;
+    result += (b + d + f + h) * (float)0.0625;
+    result += (j + k + l + m) * (float)0.125;
+    return result;
+}
+
+float3 Downsample13(uint2 pixelCoord)
+{
+    float2 uv = (float2(pixelCoord) + 0.5) * _TexelSize.zw;
+    return Downsample13(uv, _SourceSize.zw);
+}
+
+float3 SampleTailLinear(float2 uv, uint2 size)
+{
+    size = max(size, 1u);
+    float2 position = uv * float2(size) - 0.5;
+    int2 baseCoord = int2(floor(position));
+    float2 f = frac(position);
+    int2 maxCoord = int2(size) - 1;
+
+    int2 p00 = clamp(baseCoord, int2(0, 0), maxCoord);
+    int2 p10 = clamp(baseCoord + int2(1, 0), int2(0, 0), maxCoord);
+    int2 p01 = clamp(baseCoord + int2(0, 1), int2(0, 0), maxCoord);
+    int2 p11 = clamp(baseCoord + int2(1, 1), int2(0, 0), maxCoord);
+
+    float3 c00 = LoadTail((uint)p00.y * GROUP_SIZE_X + (uint)p00.x);
+    float3 c10 = LoadTail((uint)p10.y * GROUP_SIZE_X + (uint)p10.x);
+    float3 c01 = LoadTail((uint)p01.y * GROUP_SIZE_X + (uint)p01.x);
+    float3 c11 = LoadTail((uint)p11.y * GROUP_SIZE_X + (uint)p11.x);
+
+    float3 top = lerp(c00, c10, (float)f.x);
+    float3 bottom = lerp(c01, c11, (float)f.x);
+    return lerp(top, bottom, (float)f.y);
+}
+
+float3 DownsampleTail13(uint2 pixelCoord, uint2 sourceSize)
+{
+    float2 uv = (float2(pixelCoord) + 0.5) * _BloomTailSize.zw;
+    float2 sourceTexel = rcp(float2(max(sourceSize, 1u)));
+    float2 o1 = sourceTexel;
+    float2 o2 = sourceTexel * 2.0;
+
+    float3 a = SampleTailLinear(uv + float2(-o2.x,  o2.y), sourceSize);
+    float3 b = SampleTailLinear(uv + float2( 0.0,   o2.y), sourceSize);
+    float3 c = SampleTailLinear(uv + float2( o2.x,  o2.y), sourceSize);
+    float3 d = SampleTailLinear(uv + float2(-o2.x,  0.0), sourceSize);
+    float3 e = SampleTailLinear(uv, sourceSize);
+    float3 f = SampleTailLinear(uv + float2( o2.x,  0.0), sourceSize);
+    float3 g = SampleTailLinear(uv + float2(-o2.x, -o2.y), sourceSize);
+    float3 h = SampleTailLinear(uv + float2( 0.0,  -o2.y), sourceSize);
+    float3 i = SampleTailLinear(uv + float2( o2.x, -o2.y), sourceSize);
+    float3 j = SampleTailLinear(uv + float2(-o1.x,  o1.y), sourceSize);
+    float3 k = SampleTailLinear(uv + float2( o1.x,  o1.y), sourceSize);
+    float3 l = SampleTailLinear(uv + float2(-o1.x, -o1.y), sourceSize);
+    float3 m = SampleTailLinear(uv + float2( o1.x, -o1.y), sourceSize);
+
+    float3 result = e * (float)0.125;
+    result += (a + c + g + i) * (float)0.03125;
+    result += (b + d + f + h) * (float)0.0625;
+    result += (j + k + l + m) * (float)0.125;
+    return result;
+}
+
+#if defined(FILTER_LDS_2X)
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KDownsample2x(uint2 groupThreadId : SV_GroupThreadID, uint2 groupId : SV_GroupID, uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    LoadFilterTile2x(groupThreadId, groupId);
+    GroupMemoryBarrierWithGroupSync();
+
+    if (any(dispatchThreadId.xy >= uint2(_TexelSize.xy)))
+        return;
+
+    float3 output = Downsample13FromTile(groupThreadId);
+    _OutputTexture[dispatchThreadId.xy] = float4((float3)output, 1.0);
+}
+
+#endif
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KDownsample(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= uint2(_TexelSize.xy)))
+        return;
+
+    float3 output = Downsample13(dispatchThreadId.xy);
+    _OutputTexture[dispatchThreadId.xy] = float4((float3)output, 1.0);
+}
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void KDownsampleTail2(uint2 groupThreadId : SV_GroupThreadID)
+{
+    uint2 firstSize = max(uint2(_TexelSize.xy), 1u);
+    uint linearIndex = groupThreadId.y * GROUP_SIZE_X + groupThreadId.x;
+
+    if (all(groupThreadId < firstSize))
+    {
+        float3 firstLevel = Downsample13(groupThreadId);
+        _OutputTexture[groupThreadId] = float4((float3)firstLevel, 1.0);
+        StoreTail(linearIndex, firstLevel);
+    }
+    else
+    {
+        StoreTail(linearIndex, (float3)0.0);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    uint2 secondSize = max(uint2(_BloomTailSize.xy), 1u);
+    uint secondPixelCount = secondSize.x * secondSize.y;
+
+    for (uint tailIndex = linearIndex; tailIndex < secondPixelCount; tailIndex += GROUP_THREAD_COUNT)
+    {
+        uint2 pixelCoord = uint2(tailIndex % secondSize.x, tailIndex / secondSize.x);
+        float3 secondLevel = DownsampleTail13(pixelCoord, firstSize);
+        _BloomTailOutputTexture[pixelCoord] = float4((float3)secondLevel, 1.0);
+    }
+}

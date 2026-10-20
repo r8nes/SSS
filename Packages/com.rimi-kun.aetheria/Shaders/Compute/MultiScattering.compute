@@ -1,0 +1,169 @@
+#pragma kernel MultiScatter BUILDING_MULTI_SCATTER_LUT=1 ATMOSPHERE_PRECOMPUTE_ONLY=1
+#pragma kernel GroundIrradiance BUILDING_GROUND_IRRADIANCE_LUT=1 ATMOSPHERE_PRECOMPUTE_ONLY=1
+
+#include "../../ShaderLibrary/Atmosphere/AtmosphereScattering.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Sampling/Hammersley.hlsl"
+
+#if ATMOSPHERESHADERCONFIG_MULTI_SCATTERING_LUT_WIDTH != ATMOSPHERESHADERCONFIG_MULTI_SCATTERING_LUT_HEIGHT
+#error MultiScattering LUT mapping requires a square texture.
+#endif
+
+RWTexture2D<float4> ATMOSPHERE_OUTPUT_TEXTURE;
+
+static const uint MAX_MS_INTEGRATION_SAMPLES = 128;
+static const uint MS_THREADS_Z = 64;
+static const uint GROUND_IRRADIANCE_THREADS_X = 8;
+static const uint GROUND_IRRADIANCE_THREADS_Y = 8;
+
+groupshared float3 _MultiScatAs1SharedMem[MAX_MS_INTEGRATION_SAMPLES];
+groupshared float3 _LSharedMem[MAX_MS_INTEGRATION_SAMPLES];
+
+int _MultiScatterActiveSampleCount;
+int _MultiScatterRaymarchSampleCount;
+
+
+[numthreads(1, 1, MS_THREADS_Z)]
+void MultiScatter(uint3 ThreadId : SV_DispatchThreadID)
+{
+    float2 pixPos = float2(ThreadId.xy) + 0.5f;
+    float2 uv = pixPos / _MultiScatteringLutRes;
+    uv = RemapHalfTexelCoordTo01(uv, _MultiScatteringLutRes);
+
+    float cosSunZenithAngle = uv.x * 2.0 - 1.0;
+    float sinSunZenithAngle = SinFromCos(cosSunZenithAngle);
+    float3 sunDir = float3(0.0, cosSunZenithAngle, sinSunZenithAngle);
+
+    float viewHeight = lerp(
+        _BottomRadius + _PLANET_RADIUS_OFFSET,
+        _TopRadius,
+        saturate(uv.y));
+    float3 viewPos = float3(0.0f, viewHeight, 0.0f);
+
+    const float sphereSolidAngle = 4.0 * PI;
+    const float isotropicPhase = 1.0 / sphereSolidAngle;
+    uint laneIndex = ThreadId.z;
+    uint activeSampleCount = min((uint)max(_MultiScatterActiveSampleCount, 1), MAX_MS_INTEGRATION_SAMPLES);
+    float sampleWeight = sphereSolidAngle / activeSampleCount;
+
+    _MultiScatAs1SharedMem[laneIndex] = 0.0f;
+    _LSharedMem[laneIndex] = 0.0f;
+
+    for (uint sampleIndex = laneIndex; sampleIndex < activeSampleCount; sampleIndex += MS_THREADS_Z)
+    {
+        float2 xi = float2(
+            (sampleIndex + 0.5f) / activeSampleCount,
+            VanDerCorputBase2(sampleIndex));
+        float theta = 2.0 * PI * xi.x;
+        float cosPhi = 1.0 - 2.0 * xi.y;
+        float sinPhi = SinFromCos(cosPhi);
+        float cosTheta = cos(theta);
+        float sinTheta = sin(theta);
+
+        float3 viewDir = 0.0f;
+        viewDir.x = cosTheta * sinPhi;
+        viewDir.y = cosPhi;
+        viewDir.z = sinTheta * sinPhi;
+
+        _LutBuildSunDirs[0] = sunDir;
+
+        SingleScatteringResult result = IntegrateScatteredLuminance(viewPos, viewDir, true, 1.0,
+                                                                    _MultiScatterRaymarchSampleCount, -1.0,
+                                                                    false, false, 0.0);
+
+        _MultiScatAs1SharedMem[laneIndex] += result.MultiScatAs1 * sampleWeight;
+        _LSharedMem[laneIndex] += result.L * sampleWeight;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = MS_THREADS_Z >> 1; stride > 0; stride >>= 1)
+    {
+        if (ThreadId.z < stride)
+        {
+            _MultiScatAs1SharedMem[ThreadId.z] += _MultiScatAs1SharedMem[ThreadId.z + stride];
+            _LSharedMem[ThreadId.z] += _LSharedMem[ThreadId.z + stride];
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (ThreadId.z > 0)
+        return;
+
+    float3 MultiScatAs1 = _MultiScatAs1SharedMem[0] * isotropicPhase;
+    float3 InScatteredLuminance = _LSharedMem[0] * isotropicPhase;
+
+    float3 r = saturate(MultiScatAs1);
+    r = min(r, 0.999f);
+
+    float3 Sum = 1.0 / (1.0 - r);
+
+    const float3 SumOfAllMultiScatteringEventsContribution = Sum;
+
+    float3 L = InScatteredLuminance * SumOfAllMultiScatteringEventsContribution;
+
+    ATMOSPHERE_OUTPUT_TEXTURE[ThreadId.xy] = float4(L * ATMOSPHERE_MULTI_SCATTERING_PRE_EXPOSURE, 1.0);
+}
+
+[numthreads(GROUND_IRRADIANCE_THREADS_X, GROUND_IRRADIANCE_THREADS_Y, 1)]
+void GroundIrradiance(uint3 ThreadId : SV_DispatchThreadID)
+{
+    if (ThreadId.x >= ATMOSPHERESHADERCONFIG_GROUND_IRRADIANCE_LUT_WIDTH ||
+        ThreadId.y >= ATMOSPHERESHADERCONFIG_GROUND_IRRADIANCE_LUT_HEIGHT)
+        return;
+
+    float2 lutResolution = _GroundIrradianceLutResolution;
+    float2 uv = (float2(ThreadId.xy) + 0.5f) / lutResolution;
+    uv = RemapHalfTexelCoordTo01(uv, lutResolution);
+
+    float cosSunZenithAngle = uv.x * 2.0f - 1.0f;
+    float sinSunZenithAngle = SinFromCos(cosSunZenithAngle);
+    float3 sunDir = normalize(float3(0.0f, cosSunZenithAngle, sinSunZenithAngle));
+    _LutBuildSunDirs[0] = sunDir;
+
+    float viewHeight = lerp(_BottomRadius, _TopRadius, saturate(uv.y));
+    float3 viewPos = float3(0.0f, viewHeight, 0.0f);
+
+    const uint sampleCount = ATMOSPHERESHADERCONFIG_GROUND_IRRADIANCE_SAMPLE_COUNT;
+    const float hemisphereSolidAngle = 2.0f * PI;
+    float3 irradiance = 0.0f;
+
+    [loop]
+    for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+    {
+        float2 xi = float2(
+            (sampleIndex + 0.5f) / sampleCount,
+            VanDerCorputBase2(sampleIndex));
+        float phi = 2.0f * PI * xi.x;
+        float cosTheta = xi.y;
+        float sinTheta = SinFromCos(cosTheta);
+
+        float sinPhi = 0.0f;
+        float cosPhi = 1.0f;
+        sincos(phi, sinPhi, cosPhi);
+
+        float3 viewDir = float3(cosPhi * sinTheta, cosTheta, sinPhi * sinTheta);
+        float raymarchSampleCount = ComputeAdaptiveAtmosphereRaymarchSampleCount(
+            viewPos,
+            viewDir,
+            (float)_MultiScatterRaymarchSampleCount,
+            64.0f);
+
+        SingleScatteringResult result = IntegrateScatteredLuminance(
+            viewPos,
+            viewDir,
+            false,
+            1.0f,
+            raymarchSampleCount,
+            -1.0f,
+            true,
+            false,
+            0.0f);
+
+        irradiance += result.L * cosTheta;
+    }
+
+    irradiance *= hemisphereSolidAngle / (float)sampleCount;
+
+    ATMOSPHERE_OUTPUT_TEXTURE[ThreadId.xy] = float4(max(irradiance, 0.0f), 1.0f);
+}

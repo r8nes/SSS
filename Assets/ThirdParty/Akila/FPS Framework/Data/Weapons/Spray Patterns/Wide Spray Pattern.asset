@@ -1,0 +1,70 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a2535a8084a674f4f8befaea765cfb73, type: 3}
+  m_Name: Wide Spray Pattern
+  m_EditorClassIdentifier: 
+  maxAmount: 6
+  verticalMultiplier: 1
+  horizontalMultiplier: 1
+  totalAmount: 15
+  passiveMultiplier: 0.3
+  rampUpTime: 0.5
+  recoveryTime: 0.1
+  isRandomized: 0
+  fixedPatternSource: 0
+  externalSprayPatternToCopy: {fileID: 11400000, guid: 91e903ec837a88f4486e86ef2201ff17,
+    type: 2}
+  autoFill: 1
+  loop: 1
+  points:
+  - upDown: 0
+    rightLeft: 0
+  - upDown: 0.71729016
+    rightLeft: -0.6636556
+  - upDown: 0.77276546
+    rightLeft: 0.5569388
+  - upDown: 0.3389073
+    rightLeft: -0.9355124
+  - upDown: -0.28197035
+    rightLeft: -0.55402863
+  - upDown: -0.5771684
+    rightLeft: 0.26511094
+  - upDown: 0.3333106
+    rightLeft: 0.33874926
+  - upDown: 0.3070054
+    rightLeft: -0.720673
+  - upDown: 0.6393783
+    rightLeft: 0.124689855
+  - upDown: 0.83664644
+    rightLeft: 0.1906023
+  - upDown: -0.61035013
+    rightLeft: 0.37650815
+  - upDown: 0.959766
+    rightLeft: 0.1476089
+  - upDown: -0.5270426
+    rightLeft: -0.16495943
+  - upDown: -0.3095098
+    rightLeft: -0.20430213
+  - upDown: 0.83048517
+    rightLeft: -0.06395438
+  - upDown: 0.51420075
+    rightLeft: -0.0056381472
+  - upDown: 0.28151804
+    rightLeft: -0.9200064
+  - upDown: -0.12462533
+    rightLeft: 0.60437757
+  - upDown: -0.015521643
+    rightLeft: -0.48081115
+  - upDown: -0.02482232
+    rightLeft: 0.28893307
+  - upDown: -0.59401536
+    rightLeft: 0.5145531

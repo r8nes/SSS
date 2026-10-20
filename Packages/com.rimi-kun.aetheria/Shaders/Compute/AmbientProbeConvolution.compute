@@ -1,0 +1,170 @@
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Sampling/Sampling.hlsl"
+#include "../../ShaderLibrary/Common/EnvironmentCubemap.hlsl"
+
+#pragma kernel ProjectFromCubemap
+#pragma kernel ProjectFromCubemapArray
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2
+
+RWStructuredBuffer<float> _AmbientProbeOutputBuffer;
+TextureCube _AmbientProbeInputCubemap;
+Texture2DArray _AmbientProbeInputCubemapArray;
+
+#define AMBIENT_PROBE_SAMPLE_COUNT 256u
+#define AMBIENT_PROBE_THREAD_COUNT 128u
+#define AMBIENT_PROBE_SAMPLES_PER_THREAD 2u
+#define AMBIENT_PROBE_COEFF_COUNT 27u
+
+groupshared float gs_SHCoefficients[AMBIENT_PROBE_THREAD_COUNT * AMBIENT_PROBE_COEFF_COUNT];
+
+static const float SH_BASIS[9] =
+{
+    0.28209479177387814,
+   -0.4886025119029199,
+    0.4886025119029199,
+   -0.4886025119029199,
+    1.0925484305920792,
+   -1.0925484305920792,
+    0.31539156525252005,
+   -1.0925484305920792,
+    0.5462742152960396
+};
+
+
+void AccumulatePolynomialCoefficients(
+    inout float3 coefficients[9],
+    float3 color,
+    float3 direction)
+{
+    float x = direction.x;
+    float y = direction.y;
+    float z = direction.z;
+
+    coefficients[0] += color;
+    coefficients[1] += y * color;
+    coefficients[2] += z * color;
+    coefficients[3] += x * color;
+    coefficients[4] += (x * y) * color;
+    coefficients[5] += (y * z) * color;
+    coefficients[6] += (3.0 * z * z - 1.0) * color;
+    coefficients[7] += (x * z) * color;
+    coefficients[8] += (x * x - y * y) * color;
+}
+
+void StoreThreadCoefficients(uint threadIndex, float3 coefficients[9])
+{
+    uint baseIndex = threadIndex * AMBIENT_PROBE_COEFF_COUNT;
+
+    [unroll]
+    for (uint coefficient = 0u; coefficient < 9u; ++coefficient)
+    {
+        float3 value = coefficients[coefficient];
+        gs_SHCoefficients[baseIndex + coefficient] = value.r;
+        gs_SHCoefficients[baseIndex + 9u + coefficient] = value.g;
+        gs_SHCoefficients[baseIndex + 18u + coefficient] = value.b;
+    }
+}
+
+void ReduceAndStoreProbe(uint threadIndex)
+{
+    uint baseIndex = threadIndex * AMBIENT_PROBE_COEFF_COUNT;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = AMBIENT_PROBE_THREAD_COUNT / 2u; stride > 0u; stride >>= 1u)
+    {
+        if (threadIndex < stride)
+        {
+            uint otherBaseIndex = (threadIndex + stride) * AMBIENT_PROBE_COEFF_COUNT;
+
+            [unroll]
+            for (uint coefficient = 0u; coefficient < AMBIENT_PROBE_COEFF_COUNT; ++coefficient)
+            {
+                gs_SHCoefficients[baseIndex + coefficient] +=
+                    gs_SHCoefficients[otherBaseIndex + coefficient];
+            }
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (threadIndex != 0u)
+        return;
+
+    float integrationWeight = FOUR_PI / (float)AMBIENT_PROBE_SAMPLE_COUNT;
+
+    [unroll]
+    for (uint coefficient = 0u; coefficient < AMBIENT_PROBE_COEFF_COUNT; ++coefficient)
+    {
+        _AmbientProbeOutputBuffer[coefficient] =
+            gs_SHCoefficients[coefficient] *
+            SH_BASIS[coefficient % 9u] *
+            integrationWeight;
+    }
+}
+
+[numthreads(AMBIENT_PROBE_THREAD_COUNT, 1, 1)]
+void ProjectFromCubemap(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint threadIndex = dispatchThreadId.x;
+    float3 coefficients[9];
+
+    [unroll]
+    for (uint coefficient = 0u; coefficient < 9u; ++coefficient)
+        coefficients[coefficient] = 0.0;
+
+    float2 cubemapSize;
+    _AmbientProbeInputCubemap.GetDimensions(cubemapSize.x, cubemapSize.y);
+
+    float inverseTexelSolidAngle =
+        6.0 * cubemapSize.x * cubemapSize.y / FOUR_PI;
+    float sampleSolidAngle = FOUR_PI / (float)AMBIENT_PROBE_SAMPLE_COUNT;
+    float mipLevel = 0.5 * log2(sampleSolidAngle * inverseTexelSolidAngle);
+
+    [unroll]
+    for (uint sampleOffset = 0u;
+         sampleOffset < AMBIENT_PROBE_SAMPLES_PER_THREAD;
+         ++sampleOffset)
+    {
+        uint sampleIndex = threadIndex + sampleOffset * AMBIENT_PROBE_THREAD_COUNT;
+        float2 sample = Hammersley2dSeq(sampleIndex, AMBIENT_PROBE_SAMPLE_COUNT);
+        float3 direction = SampleSphereUniform(sample.x, sample.y);
+        float3 color = _AmbientProbeInputCubemap.SampleLevel(
+            sampler_LinearClamp,
+            direction,
+            mipLevel).rgb;
+        AccumulatePolynomialCoefficients(coefficients, color, direction);
+    }
+
+    StoreThreadCoefficients(threadIndex, coefficients);
+    ReduceAndStoreProbe(threadIndex);
+}
+
+[numthreads(AMBIENT_PROBE_THREAD_COUNT, 1, 1)]
+void ProjectFromCubemapArray(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint threadIndex = dispatchThreadId.x;
+    float3 coefficients[9];
+
+    [unroll]
+    for (uint coefficient = 0u; coefficient < 9u; ++coefficient)
+        coefficients[coefficient] = 0.0;
+
+    [unroll]
+    for (uint sampleOffset = 0u;
+         sampleOffset < AMBIENT_PROBE_SAMPLES_PER_THREAD;
+         ++sampleOffset)
+    {
+        uint sampleIndex = threadIndex + sampleOffset * AMBIENT_PROBE_THREAD_COUNT;
+        float2 sample = Hammersley2dSeq(sampleIndex, AMBIENT_PROBE_SAMPLE_COUNT);
+        float3 direction = SampleSphereUniform(sample.x, sample.y);
+        float3 color = _AmbientProbeInputCubemapArray.SampleLevel(
+            sampler_LinearClamp,
+            DirectionToCubeCoordinates(direction),
+            0.0).rgb;
+        AccumulatePolynomialCoefficients(coefficients, color, direction);
+    }
+
+    StoreThreadCoefficients(threadIndex, coefficients);
+    ReduceAndStoreProbe(threadIndex);
+}

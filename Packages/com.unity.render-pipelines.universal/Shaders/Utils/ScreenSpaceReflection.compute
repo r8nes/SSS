@@ -1,0 +1,655 @@
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2 glcore gles3 webgpu
+#pragma kernel KResetRayQueue
+#pragma kernel KClassifyRays
+#pragma kernel KBuildIndirectArgs
+#pragma kernel KTraceNearest
+#pragma kernel KTraceTowardsEye
+#pragma kernel KUpscaleBilinear
+#pragma kernel KUpscaleBilateral
+#pragma multi_compile _ _GBUFFER_NORMALS_OCT
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+TEXTURE2D_FLOAT(_CameraDepthTexture);
+TEXTURE2D(_CameraNormalsTexture);
+TEXTURE2D_FLOAT(_ScreenSpaceReflectionReceiverDepthTexture);
+TEXTURE2D(_ScreenSpaceReflectionReceiverNormalSmoothnessTexture);
+TEXTURE2D(_MotionVectorColorTexture);
+TEXTURE2D(_ScreenSpaceReflectionColorTexture);
+TEXTURE2D(_SsrInputTexture);
+float4 _ScreenSpaceReflectionSourceScaleAndLimit;
+float4 _ScreenSpaceReflectionParam2;
+TEXTURE2D_FLOAT(_DepthPyramid);
+TEXTURE2D_FLOAT(_DepthPyramidFarthest);
+float4 _SsrDepthMipData[15];
+int _SsrDepthMipCount;
+float4x4 _CameraProjection;
+float4x4 _CameraInverseProjection;
+float4x4 _CameraView;
+float4x4 _SsrCurrentToPreviousClip;
+float4x4 _SsrSkyCurrentToPreviousClip;
+float4 _SsrSurfaceSize;
+float4 _SsrCameraNearAndJitter;
+float4 _ThicknessScaleAndBias;
+float4 _SmoothnessAndStrength;
+float4 _ScreenEdgeFadeAndViewConeDot;
+float4 _MaxRayLength;
+int _MaxRaySteps;
+int _ReflectSky;
+int _SsrReceiverActive;
+int _SsrUseMotionVectors;
+int _SsrHasValidColorSource;
+int _SsrProjectionMode;
+float4 _SsrInputSize;
+float4 _SsrTraceSize;
+int _SsrMaxRayCount;
+RWStructuredBuffer<uint> _SsrRayQueue;
+RWStructuredBuffer<uint> _SsrRayCounters;
+RWStructuredBuffer<uint> _SsrIndirectArgs;
+struct ScreenSpaceReflectionSurface
+{
+    float depth;
+    float4 metadata;
+    uint receiver;
+};
+ScreenSpaceReflectionSurface LoadScreenSpaceReflectionSurface(int2 pixel)
+{
+    ScreenSpaceReflectionSurface s;
+    s.depth = LOAD_TEXTURE2D(_CameraDepthTexture, pixel).r;
+    s.metadata = 0.0;
+    s.receiver = 0u;
+    if (_SsrReceiverActive != 0)
+    {
+        float receiverDepth = LOAD_TEXTURE2D(_ScreenSpaceReflectionReceiverDepthTexture, pixel).r;
+        if (COMPARE_DEVICE_DEPTH_CLOSER(receiverDepth, s.depth))
+        {
+            s.depth = receiverDepth;
+            s.receiver = 1u;
+        }
+    }
+    if (s.depth != UNITY_RAW_FAR_CLIP_VALUE)
+        s.metadata = s.receiver != 0u
+            ? LOAD_TEXTURE2D(_ScreenSpaceReflectionReceiverNormalSmoothnessTexture, pixel)
+            : LOAD_TEXTURE2D(_CameraNormalsTexture, pixel);
+    return s;
+}
+float SurfaceSmoothness(ScreenSpaceReflectionSurface s)
+{
+    return saturate(s.receiver != 0u ? s.metadata.b : s.metadata.a);
+}
+float3 SurfaceNormal(ScreenSpaceReflectionSurface s)
+{
+    float3 normal = s.metadata.rgb;
+    if (s.receiver != 0u)
+        normal = UnpackNormalOctQuadEncode(s.metadata.rg * 2.0 - 1.0);
+#if defined(_GBUFFER_NORMALS_OCT)
+    else
+        normal = UnpackNormalOctQuadEncode(Unpack888ToFloat2(s.metadata.rgb) * 2.0 - 1.0);
+#endif
+    return normal;
+}
+int2 SurfacePixel(float2 uv)
+{
+    return clamp(int2(uv * _SsrSurfaceSize.xy), int2(0, 0), int2(_SsrSurfaceSize.xy) - 1);
+}
+float4 SSRDeviceToClip(float2 uv, float depth)
+{
+#if !defined(UNITY_REVERSED_Z)
+    depth = lerp(UNITY_NEAR_CLIP_VALUE, 1.0, depth);
+#endif
+    return ComputeClipSpacePosition(uv, depth);
+}
+float3 ReconstructSSRPosition(float2 uv, float depth, float4x4 inverseMatrix)
+{
+    float4 p = mul(inverseMatrix, SSRDeviceToClip(uv, depth));
+    return p.xyz / p.w;
+}
+float2 SSRDeviceToNDC(float2 uv)
+{
+    float2 ndc = uv * 2.0 - 1.0;
+#if UNITY_UV_STARTS_AT_TOP
+    ndc.y = -ndc.y;
+#endif
+    return ndc;
+}
+float3 ReconstructSSRViewPosition(float2 uv, float depth)
+{
+    float3 result = 0.0;
+    if (_SsrProjectionMode != 0)
+    {
+        result = ReconstructSSRPosition(uv, depth, _CameraInverseProjection);
+    }
+    else
+    {
+        float z = -LinearEyeDepth(depth, _ZBufferParams);
+        float2 ndc = SSRDeviceToNDC(uv);
+        float clipW = _CameraProjection[3][2] * z + _CameraProjection[3][3];
+        float x = (ndc.x * clipW - _CameraProjection[0][2] * z - _CameraProjection[0][3]) / _CameraProjection[0][0];
+        float y = (ndc.y * clipW - _CameraProjection[1][2] * z - _CameraProjection[1][3]) / _CameraProjection[1][1];
+        result = float3(x, y, z);
+    }
+    return result;
+}
+float4 ProjectSSRViewPosition(float3 p)
+{
+    float4 result = 0.0;
+    if (_SsrProjectionMode != 0)
+    {
+        result = mul(_CameraProjection, float4(p, 1.0));
+    }
+    else
+    {
+        result = float4(
+            _CameraProjection[0][0] * p.x + _CameraProjection[0][2] * p.z + _CameraProjection[0][3],
+            _CameraProjection[1][1] * p.y + _CameraProjection[1][2] * p.z + _CameraProjection[1][3],
+            _CameraProjection[2][2] * p.z + _CameraProjection[2][3],
+            _CameraProjection[3][2] * p.z + _CameraProjection[3][3]);
+    }
+    return result;
+}
+float3 SSRClipToDevice(float4 clip)
+{
+#if UNITY_UV_STARTS_AT_TOP
+    clip.y = -clip.y;
+#endif
+    float3 result = clip.xyz / clip.w;
+    result.xy = result.xy * 0.5 + 0.5;
+#if !defined(UNITY_REVERSED_Z)
+    result.z = (result.z - UNITY_NEAR_CLIP_VALUE) / (1.0 - UNITY_NEAR_CLIP_VALUE);
+#endif
+    return result;
+}
+struct ScreenSpaceReflectionRay
+{
+    float3 origin;
+    float3 delta;
+    float3 inverseDirection;
+    float2 inverseW;
+    float length;
+    float viewFade;
+};
+bool EvaluateScreenSpaceReflectionDirection(float2 uv, float depth, float3 normalWS, bool towardsEye,
+                                            out float3 p, out float3 r,
+                                            out float viewFade, out float lengthVS)
+{
+    p = ReconstructSSRViewPosition(uv, depth);
+    float3 n = SafeNormalize(mul((float3x3)_CameraView, normalWS));
+    float3 v = _SsrProjectionMode != 0 ? float3(0.0, 0.0, 1.0) : SafeNormalize(-p);
+    bool valid = dot(n, v) > 1e-4;
+    r = reflect(-v, n);
+    viewFade = 0.0;
+    lengthVS = 0.0;
+    if (valid)
+    {
+        viewFade = smoothstep(_ScreenEdgeFadeAndViewConeDot.z,
+                              _ScreenEdgeFadeAndViewConeDot.z + 0.1, dot(-v, r));
+        valid = viewFade > 1e-4;
+    }
+    if (valid)
+    {
+        p += v * max(1e-4, -p.z * 1e-5);
+        lengthVS = _MaxRayLength.x;
+        if (towardsEye)
+            lengthVS = min(lengthVS, max(0.0, (-_SsrCameraNearAndJitter.x - p.z) / r.z));
+        valid = lengthVS > 1e-4;
+    }
+    return valid;
+}
+bool BuildScreenSpaceReflectionRay(float2 uv, float depth, float3 normalWS, bool towardsEye,
+                                   out ScreenSpaceReflectionRay ray)
+{
+    ray = (ScreenSpaceReflectionRay)0;
+    float3 p = 0.0;
+    float3 r = 0.0;
+    float lengthVS = 0.0;
+    bool valid = EvaluateScreenSpaceReflectionDirection(uv, depth, normalWS, towardsEye, p, r, ray.viewFade, lengthVS);
+    if (valid)
+    {
+        float4 startCS = ProjectSSRViewPosition(p);
+        float4 endCS = ProjectSSRViewPosition(p + r * lengthVS);
+        float4 startPlanes = float4(startCS.w + startCS.x, startCS.w - startCS.x,
+                                   startCS.w + startCS.y, startCS.w - startCS.y);
+        float4 endPlanes = float4(endCS.w + endCS.x, endCS.w - endCS.x,
+                                 endCS.w + endCS.y, endCS.w - endCS.y);
+        float4 exit = 1.0;
+        UNITY_UNROLL
+        for (int axis = 0; axis < 4; ++axis)
+        {
+            if (endPlanes[axis] < 0.0)
+                exit[axis] = saturate(startPlanes[axis] / (startPlanes[axis] - endPlanes[axis]));
+        }
+        float exitT = min(min(exit.x, exit.y), min(exit.z, exit.w));
+        lengthVS *= exitT;
+        valid = lengthVS > 1e-4;
+        if (valid)
+        {
+            endCS = lerp(startCS, endCS, exitT);
+            float3 startNDC = SSRClipToDevice(startCS);
+            float3 endNDC = SSRClipToDevice(endCS);
+            ray.origin = float3(startNDC.xy * _SsrSurfaceSize.xy, startNDC.z);
+            ray.delta = float3(endNDC.xy * _SsrSurfaceSize.xy, endNDC.z) - ray.origin;
+            ray.inverseDirection = float3(ray.delta.x >= 0.0 ? 1.0 : -1.0,
+                                         ray.delta.y >= 0.0 ? 1.0 : -1.0,
+                                         ray.delta.z >= 0.0 ? 1.0 : -1.0) / max(abs(ray.delta), 1e-8);
+            ray.inverseW = rcp(float2(startCS.w, endCS.w));
+            ray.length = lengthVS;
+            valid = max(abs(ray.delta.x), abs(ray.delta.y)) >= 1.0;
+        }
+    }
+    return valid;
+}
+int GetSSRMaxUsefulMip(ScreenSpaceReflectionRay ray)
+{
+    uint extent = max(1u, (uint)ceil(max(abs(ray.delta.x), abs(ray.delta.y))));
+    return min(min(_SsrDepthMipCount - 1, 14), firstbithigh(extent));
+}
+struct ScreenSpaceReflectionHit
+{
+    float2 uv;
+    float depth;
+    float distance;
+    uint sky;
+};
+bool DepthIntervalsOverlap(float z0, float z1, float nearest, float farthest)
+{
+    float rayNear = COMPARE_DEVICE_DEPTH_CLOSER(z0, z1) ? z0 : z1;
+    float rayFar = COMPARE_DEVICE_DEPTH_CLOSER(z0, z1) ? z1 : z0;
+    float slabFar = farthest * _ThicknessScaleAndBias.x + _ThicknessScaleAndBias.y;
+    return !COMPARE_DEVICE_DEPTH_CLOSER(rayFar, nearest) &&
+           !COMPARE_DEVICE_DEPTH_CLOSER(slabFar, rayNear);
+}
+float CellExitFast(float2 origin, float2 inverseDirection, int2 cell, int mip, int2 cellStep, float2 cellOffset)
+{
+    float2 boundary = float2((cell + cellStep) << mip) + cellOffset;
+    float2 exitDistance = (boundary - origin) * inverseDirection;
+    return min(exitDistance.x, exitDistance.y);
+}
+uint ValidateSSRLeaf(ScreenSpaceReflectionRay ray, float t, float exitT, int2 pixel, float depth,
+                     inout bool belowPreviousLeaf, out ScreenSpaceReflectionHit hit)
+{
+    hit = (ScreenSpaceReflectionHit)0;
+    uint state = 0u;
+    float3 position = ray.origin + ray.delta * t;
+    float backDepth = depth * _ThicknessScaleAndBias.x + _ThicknessScaleAndBias.y;
+    float planeT = (depth - ray.origin.z) * ray.inverseDirection.z;
+    bool belowFront = !COMPARE_DEVICE_DEPTH_CLOSER(position.z, depth);
+    bool inside = belowFront && COMPARE_DEVICE_DEPTH_CLOSEREQUAL(position.z, backDepth);
+    bool crossesFront = t <= planeT && planeT <= exitT && planeT <= 1.0;
+    bool sky = depth == UNITY_RAW_FAR_CLIP_VALUE;
+    bool rejected = belowPreviousLeaf && inside;
+    bool found = !rejected && (crossesFront || inside || (sky && _ReflectSky != 0));
+    found = found && (!sky || _ReflectSky != 0);
+    belowPreviousLeaf = belowFront;
+    if (rejected)
+        state = 2u;
+    else if (found)
+    {
+        hit.uv = (float2(pixel) + 0.5) * _SsrSurfaceSize.zw;
+        hit.depth = depth;
+        float hitT = crossesFront ? planeT : t;
+        float lambda = hitT * ray.inverseW.y / lerp(ray.inverseW.x, ray.inverseW.y, hitT);
+        hit.distance = saturate(lambda) * ray.length;
+        hit.sky = sky ? 1u : 0u;
+        state = 1u;
+    }
+    return state;
+}
+bool TraceScreenSpaceRayNearest(ScreenSpaceReflectionRay ray, out ScreenSpaceReflectionHit hit)
+{
+    hit = (ScreenSpaceReflectionHit)0;
+    float2 inverseDirection = ray.inverseDirection.xy;
+    int2 cellStep = int2(inverseDirection.x > 0.0 ? 1 : 0, inverseDirection.y > 0.0 ? 1 : 0);
+    float2 cellOffset = float2(inverseDirection.x > 0.0 ? 0.000488281 : -0.000488281,
+                              inverseDirection.y > 0.0 ? 0.000488281 : -0.000488281);
+    int2 initialPixel = int2(floor(ray.origin.xy));
+    float t = max(0.0, CellExitFast(ray.origin.xy, inverseDirection, initialPixel, 0, cellStep, cellOffset));
+    int maxMip = GetSSRMaxUsefulMip(ray);
+    int mip = 0;
+    bool belowPreviousLeaf = false;
+    [loop]
+    for (int iteration = 0; iteration < _MaxRaySteps && t <= 1.0; ++iteration)
+    {
+        float3 position = ray.origin + ray.delta * t;
+        if (any(position.xy < 0.0) || any(position.xy >= _SsrSurfaceSize.xy))
+            break;
+        int2 pixel = int2(position.xy);
+        int2 cell = pixel >> mip;
+        float exitT = CellExitFast(ray.origin.xy, inverseDirection, cell, mip, cellStep, cellOffset);
+        int2 atlas = int2(_SsrDepthMipData[mip].xy) + cell;
+        float depth = LOAD_TEXTURE2D(_DepthPyramid, atlas).r;
+        if (mip == 0)
+        {
+            uint state = ValidateSSRLeaf(ray, t, exitT, pixel, depth, belowPreviousLeaf, hit);
+            if (state == 1u)
+                return true;
+            if (state == 2u)
+                return false;
+            t = max(exitT, t + 1e-6);
+            mip = min(1, maxMip);
+            continue;
+        }
+        belowPreviousLeaf = false;
+        float planeT = (depth - ray.origin.z) * ray.inverseDirection.z;
+        bool aboveFront = COMPARE_DEVICE_DEPTH_CLOSER(position.z, depth);
+        if (aboveFront && exitT < planeT)
+        {
+            t = max(exitT, t + 1e-6);
+            mip = min(mip + 1, maxMip);
+        }
+        else
+        {
+            if (aboveFront)
+                t = max(planeT, t);
+            mip = max(0, mip - 1);
+        }
+    }
+    return false;
+}
+bool TraceScreenSpaceRayTowardsEye(ScreenSpaceReflectionRay ray, out ScreenSpaceReflectionHit hit)
+{
+    hit = (ScreenSpaceReflectionHit)0;
+    float2 inverseDirection = ray.inverseDirection.xy;
+    int2 cellStep = int2(inverseDirection.x > 0.0 ? 1 : 0, inverseDirection.y > 0.0 ? 1 : 0);
+    float2 cellOffset = float2(inverseDirection.x > 0.0 ? 0.000488281 : -0.000488281,
+                              inverseDirection.y > 0.0 ? 0.000488281 : -0.000488281);
+    int2 initialPixel = int2(floor(ray.origin.xy));
+    float t = max(0.0, CellExitFast(ray.origin.xy, inverseDirection, initialPixel, 0, cellStep, cellOffset));
+    int maxMip = GetSSRMaxUsefulMip(ray);
+    int mip = 0;
+    bool belowPreviousLeaf = false;
+    [loop]
+    for (int iteration = 0; iteration < _MaxRaySteps && t <= 1.0; ++iteration)
+    {
+        float3 position = ray.origin + ray.delta * t;
+        if (any(position.xy < 0.0) || any(position.xy >= _SsrSurfaceSize.xy))
+            break;
+        int2 pixel = int2(position.xy);
+        int2 cell = pixel >> mip;
+        float exitT = CellExitFast(ray.origin.xy, inverseDirection, cell, mip, cellStep, cellOffset);
+        int2 atlas = int2(_SsrDepthMipData[mip].xy) + cell;
+        float nearest = LOAD_TEXTURE2D(_DepthPyramid, atlas).r;
+        if (mip == 0)
+        {
+            uint state = ValidateSSRLeaf(ray, t, exitT, pixel, nearest, belowPreviousLeaf, hit);
+            if (state == 1u)
+                return true;
+            if (state == 2u)
+                return false;
+            t = max(exitT, t + 1e-6);
+            mip = min(1, maxMip);
+            continue;
+        }
+        belowPreviousLeaf = false;
+        float farthest = LOAD_TEXTURE2D(_DepthPyramidFarthest, atlas).r;
+        float exitDepth = ray.origin.z + min(exitT, 1.0) * ray.delta.z;
+        if (DepthIntervalsOverlap(position.z, exitDepth, nearest, farthest))
+        {
+            --mip;
+        }
+        else
+        {
+            t = max(exitT, t + 1e-6);
+            mip = min(mip + 1, maxMip);
+        }
+    }
+    return false;
+}
+float2 SampleSSRHitMotion(float2 uv)
+{
+    return SAMPLE_TEXTURE2D_LOD(_MotionVectorColorTexture, sampler_PointClamp,
+        uv, 0).xy;
+}
+bool ReprojectSSRColor(float2 uv, float depth, bool sky, out float2 previousUV)
+{
+    float4 currentCS = SSRDeviceToClip(uv, depth);
+    float4 previousCS = sky
+        ? mul(_SsrSkyCurrentToPreviousClip, currentCS)
+        : mul(_SsrCurrentToPreviousClip, currentCS);
+    previousUV = uv;
+    bool valid = previousCS.w > 0.0;
+    if (valid)
+    {
+        previousUV = SSRClipToDevice(previousCS).xy;
+        if (_SsrUseMotionVectors != 0 && !sky)
+            previousUV = uv - SampleSSRHitMotion(uv) - _SsrCameraNearAndJitter.yz;
+        valid = all(previousUV >= 0.0) && all(previousUV < 1.0);
+    }
+    return valid;
+}
+float3 ClassifySSRViewVector(float2 uv)
+{
+    float3 viewVector = float3(0.0, 0.0, 1.0);
+    if (_SsrProjectionMode == 0)
+    {
+        float2 ndc = SSRDeviceToNDC(uv);
+        float z = -1.0;
+        float clipW = _CameraProjection[3][2] * z + _CameraProjection[3][3];
+        float x = (ndc.x * clipW - _CameraProjection[0][2] * z - _CameraProjection[0][3]) / _CameraProjection[0][0];
+        float y = (ndc.y * clipW - _CameraProjection[1][2] * z - _CameraProjection[1][3]) / _CameraProjection[1][1];
+        viewVector = float3(-x, -y, 1.0);
+    }
+    return viewVector;
+}
+bool ClassifyScreenSpaceReflectionRay(uint2 tracePixel, out bool towardsEye)
+{
+    towardsEye = false;
+    bool active = false;
+    if (_SsrHasValidColorSource != 0)
+    {
+        float2 uv = (float2(tracePixel) + 0.5) / _SsrTraceSize.xy;
+        int2 pixel = SurfacePixel(uv);
+        ScreenSpaceReflectionSurface surface = LoadScreenSpaceReflectionSurface(pixel);
+        bool surfaceValid = !(surface.depth == UNITY_RAW_FAR_CLIP_VALUE ||
+                              SurfaceSmoothness(surface) <= _SmoothnessAndStrength.x);
+        if (surfaceValid)
+        {
+            uv = (float2(pixel) + 0.5) * _SsrSurfaceSize.zw;
+            float3 n = SafeNormalize(mul((float3x3)_CameraView, SurfaceNormal(surface)));
+            float3 v = ClassifySSRViewVector(uv);
+            active = !(dot(n, v) <= 0.0);
+            if (active)
+                towardsEye = reflect(-v, n).z > 0.0;
+        }
+    }
+    return active;
+}
+bool PrepareScreenSpaceReflectionRay(uint2 tracePixel, bool towardsEye, out ScreenSpaceReflectionRay ray)
+{
+    ray = (ScreenSpaceReflectionRay)0;
+    bool valid = false;
+    float2 uv = (float2(tracePixel) + 0.5) / _SsrTraceSize.xy;
+    int2 pixel = SurfacePixel(uv);
+    ScreenSpaceReflectionSurface surface = LoadScreenSpaceReflectionSurface(pixel);
+    if (surface.depth != UNITY_RAW_FAR_CLIP_VALUE && SurfaceSmoothness(surface) > _SmoothnessAndStrength.x)
+    {
+        uv = (float2(pixel) + 0.5) * _SsrSurfaceSize.zw;
+        valid = BuildScreenSpaceReflectionRay(uv, surface.depth, SurfaceNormal(surface), towardsEye, ray);
+    }
+    return valid;
+}
+float4 ResolveScreenSpaceReflectionRadiance(ScreenSpaceReflectionRay ray, ScreenSpaceReflectionHit hit)
+{
+    float4 result = 0.0;
+    float confidence = ray.viewFade * _SmoothnessAndStrength.z;
+    if (hit.sky == 0u)
+        confidence *= 1.0 - smoothstep(_MaxRayLength.y, max(_MaxRayLength.x, _MaxRayLength.y + 1e-4), hit.distance);
+    float2 edge = smoothstep(0.0, _ScreenEdgeFadeAndViewConeDot.x, hit.uv) *
+                  smoothstep(1.0, _ScreenEdgeFadeAndViewConeDot.y, hit.uv);
+    confidence = saturate(confidence * edge.x * edge.y);
+    if (confidence > 1e-4)
+    {
+        float2 sourceUV = 0.0;
+        if (ReprojectSSRColor(hit.uv, hit.depth, hit.sky != 0u, sourceUV))
+        {
+            sourceUV = min(sourceUV * _ScreenSpaceReflectionSourceScaleAndLimit.xy,
+                           _ScreenSpaceReflectionSourceScaleAndLimit.zw);
+            float3 color = SAMPLE_TEXTURE2D_LOD(_ScreenSpaceReflectionColorTexture, sampler_LinearClamp, sourceUV, 0).rgb;
+            float peak = Max3(color.r, color.g, color.b);
+            color *= min(1.0, _ScreenSpaceReflectionParam2.w / max(peak, 1e-6));
+            result = float4(color * confidence, confidence);
+        }
+    }
+    return result;
+}
+float4 TraceAndResolveNearest(ScreenSpaceReflectionRay ray)
+{
+    ScreenSpaceReflectionHit hit = (ScreenSpaceReflectionHit)0;
+    return TraceScreenSpaceRayNearest(ray, hit) ? ResolveScreenSpaceReflectionRadiance(ray, hit) : 0.0;
+}
+float4 TraceAndResolveTowardsEye(ScreenSpaceReflectionRay ray)
+{
+    ScreenSpaceReflectionHit hit = (ScreenSpaceReflectionHit)0;
+    return TraceScreenSpaceRayTowardsEye(ray, hit) ? ResolveScreenSpaceReflectionRadiance(ray, hit) : 0.0;
+}
+static const uint k_SsrTraceThreads = 64u;
+groupshared uint s_SsrNearestCount;
+groupshared uint s_SsrTowardsCount;
+groupshared uint s_SsrNearestBase;
+groupshared uint s_SsrTowardsBase;
+groupshared uint s_SsrNearestPixels[64];
+groupshared uint s_SsrTowardsPixels[64];
+RWTexture2D<float4> _SsrOutputTexture;
+uint PackSSRPixel(uint2 pixel)
+{
+    return (pixel.x & 0xffffu) | (pixel.y << 16u);
+}
+uint2 UnpackSSRPixel(uint packed)
+{
+    return uint2(packed & 0xffffu, packed >> 16u);
+}
+[numthreads(1, 1, 1)]
+void KResetRayQueue(uint3 id : SV_DispatchThreadID)
+{
+    _SsrRayCounters[0] = 0u;
+    _SsrRayCounters[1] = 0u;
+}
+[numthreads(8, 8, 1)]
+void KClassifyRays(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
+{
+    if (groupIndex == 0u)
+    {
+        s_SsrNearestCount = 0u;
+        s_SsrTowardsCount = 0u;
+        s_SsrNearestBase = 0u;
+        s_SsrTowardsBase = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint2 traceSize = (uint2)_SsrTraceSize.xy;
+    bool inBounds = all(id.xy < traceSize);
+    bool towardsEye = false;
+    bool active = inBounds && ClassifyScreenSpaceReflectionRay(id.xy, towardsEye);
+    if (active)
+    {
+        uint slot = 0u;
+        uint packed = PackSSRPixel(id.xy);
+        if (towardsEye)
+        {
+            InterlockedAdd(s_SsrTowardsCount, 1u, slot);
+            s_SsrTowardsPixels[slot] = packed;
+        }
+        else
+        {
+            InterlockedAdd(s_SsrNearestCount, 1u, slot);
+            s_SsrNearestPixels[slot] = packed;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (groupIndex == 0u)
+    {
+        if (s_SsrNearestCount != 0u)
+            InterlockedAdd(_SsrRayCounters[0], s_SsrNearestCount, s_SsrNearestBase);
+        if (s_SsrTowardsCount != 0u)
+            InterlockedAdd(_SsrRayCounters[1], s_SsrTowardsCount, s_SsrTowardsBase);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (groupIndex < s_SsrNearestCount)
+        _SsrRayQueue[s_SsrNearestBase + groupIndex] = s_SsrNearestPixels[groupIndex];
+    if (groupIndex < s_SsrTowardsCount)
+        _SsrRayQueue[(uint)_SsrMaxRayCount - 1u - (s_SsrTowardsBase + groupIndex)] = s_SsrTowardsPixels[groupIndex];
+}
+[numthreads(1, 1, 1)]
+void KBuildIndirectArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint nearestCount = _SsrRayCounters[0];
+    uint towardsCount = _SsrRayCounters[1];
+    _SsrIndirectArgs[0] = (nearestCount + k_SsrTraceThreads - 1u) / k_SsrTraceThreads;
+    _SsrIndirectArgs[1] = 1u;
+    _SsrIndirectArgs[2] = 1u;
+    _SsrIndirectArgs[3] = (towardsCount + k_SsrTraceThreads - 1u) / k_SsrTraceThreads;
+    _SsrIndirectArgs[4] = 1u;
+    _SsrIndirectArgs[5] = 1u;
+}
+[numthreads(64, 1, 1)]
+void KTraceNearest(uint3 id : SV_DispatchThreadID)
+{
+    uint count = _SsrRayCounters[0];
+    if (id.x >= count)
+        return;
+    uint2 tracePixel = UnpackSSRPixel(_SsrRayQueue[id.x]);
+    ScreenSpaceReflectionRay ray = (ScreenSpaceReflectionRay)0;
+    if (!PrepareScreenSpaceReflectionRay(tracePixel, false, ray))
+        return;
+    _SsrOutputTexture[tracePixel] = TraceAndResolveNearest(ray);
+}
+[numthreads(64, 1, 1)]
+void KTraceTowardsEye(uint3 id : SV_DispatchThreadID)
+{
+    uint count = _SsrRayCounters[1];
+    if (id.x >= count)
+        return;
+    uint queueIndex = (uint)_SsrMaxRayCount - 1u - id.x;
+    uint2 tracePixel = UnpackSSRPixel(_SsrRayQueue[queueIndex]);
+    ScreenSpaceReflectionRay ray = (ScreenSpaceReflectionRay)0;
+    if (!PrepareScreenSpaceReflectionRay(tracePixel, true, ray))
+        return;
+    _SsrOutputTexture[tracePixel] = TraceAndResolveTowardsEye(ray);
+}
+float4 UpscaleSSRRadiance(int2 outputPixel, bool bilateral)
+{
+    float2 uv = (float2(outputPixel) + 0.5) * _SsrSurfaceSize.zw;
+    float2 texel = uv * _SsrInputSize.xy - 0.5;
+    int2 topLeft = int2(floor(texel));
+    float2 fraction = frac(texel);
+    ScreenSpaceReflectionSurface reference = LoadScreenSpaceReflectionSurface(SurfacePixel(uv));
+    float3 referenceNormal = SurfaceNormal(reference);
+    float referenceZ = -ReconstructSSRPosition(uv, reference.depth, _CameraInverseProjection).z;
+    float4 radiance = 0.0;
+    float weightSum = 0.0;
+    UNITY_UNROLL
+    for (int y = 0; y < 2; ++y)
+    {
+        UNITY_UNROLL
+        for (int x = 0; x < 2; ++x)
+        {
+            int2 pixel = clamp(topLeft + int2(x, y), int2(0, 0), int2(_SsrInputSize.xy) - 1);
+            float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);
+            if (bilateral)
+            {
+                float2 sampleUV = (float2(pixel) + 0.5) * _SsrInputSize.zw;
+                ScreenSpaceReflectionSurface sampleSurface = LoadScreenSpaceReflectionSurface(SurfacePixel(sampleUV));
+                float sampleZ = -ReconstructSSRPosition(sampleUV, sampleSurface.depth, _CameraInverseProjection).z;
+                float depthWeight = 1.0 - smoothstep(0.01, 0.03, abs(referenceZ - sampleZ) / max(referenceZ, 0.1));
+                weight *= depthWeight * smoothstep(0.8, 1.0, dot(referenceNormal, SurfaceNormal(sampleSurface)));
+                weight *= 1.0 - smoothstep(0.05, 0.2, abs(SurfaceSmoothness(reference) - SurfaceSmoothness(sampleSurface)));
+                weight *= reference.receiver == sampleSurface.receiver ? 1.0 : 0.0;
+            }
+            radiance += LOAD_TEXTURE2D(_SsrInputTexture, pixel) * weight;
+            weightSum += weight;
+        }
+    }
+    return weightSum > 1e-5 ? radiance / weightSum : 0.0;
+}
+[numthreads(8, 8, 1)]
+void KUpscaleBilinear(uint3 id : SV_DispatchThreadID)
+{
+    uint2 outputSize = (uint2)_SsrSurfaceSize.xy;
+    if (any(id.xy >= outputSize))
+        return;
+    _SsrOutputTexture[id.xy] = UpscaleSSRRadiance(int2(id.xy), false);
+}
+[numthreads(8, 8, 1)]
+void KUpscaleBilateral(uint3 id : SV_DispatchThreadID)
+{
+    uint2 outputSize = (uint2)_SsrSurfaceSize.xy;
+    if (any(id.xy >= outputSize))
+        return;
+    _SsrOutputTexture[id.xy] = UpscaleSSRRadiance(int2(id.xy), true);
+}

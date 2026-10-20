@@ -1,0 +1,270 @@
+#pragma kernel WaterUpdateFoam
+#pragma kernel WaterUpdateFoamNoCurrent FOAM_NO_CURRENT
+#pragma kernel WaterReprojectFoam
+#pragma only_renderers d3d11 vulkan
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/GlobalSamplers.hlsl"
+#include "../../Core/WaterShaderVariables.cs.hlsl"
+#include "../Common/WaterCascadeUtilities.hlsl"
+#include "../Common/WaterCurrentUtilities.hlsl"
+#include "../Common/WaterFoamCascades.hlsl"
+
+Texture2DArray<float4> _FoamSource;
+RWTexture2DArray<float4> _FoamTarget;
+int _FoamSourceValid;
+int _FoamSourceIsCurrent;
+int _FoamLodScaleShift;
+int _FoamPrewarmingRequired;
+float4 _CascadeWhitecap;
+float4 _CascadeFoamAmount;
+
+#include "../Common/WaterWaveField.hlsl"
+
+float EvaluateFoamSourceMipLevel(uint cascadeIndex, uint foamSlice)
+{
+    float2 inverseTileLength = max(GetWaterCascadeScaleOffset((int)cascadeIndex).xy, 1e-8.xx);
+    float2 waveTexel = rcp(inverseTileLength * max((float)_WaterSimulationResolution, 1.0));
+    uint minimumSlice = (uint)max(round(_WaterFoamLodScale.w), 0.0);
+    uint filteredSlice = min(max(minimumSlice, foamSlice), WaterFoamLodCount() - 1u);
+    float filterWidth = 2.0 * WaterFoamCascadeTexel(filteredSlice, false);
+    float texel = max(waveTexel.x, waveTexel.y);
+    float sourceMip = clamp(log2(max(filterWidth / max(texel, 1e-8), 1.0)), 0.0, log2(max((float)_WaterSimulationResolution, 1.0)));
+    return min(sourceMip, 1.0 + (float)foamSlice);
+}
+
+struct FoamHorizontalField
+{
+    float2 displacement;
+    float4 gradient;
+};
+
+FoamHorizontalField RotateFoamHorizontalField(FoamHorizontalField input, float4 rotation)
+{
+    FoamHorizontalField output;
+    output.displacement = RotateWaterWaveVector(input.displacement, rotation);
+    output.gradient = RotateWaterWaveDerivativeTensor(input.gradient, rotation);
+    return output;
+}
+
+FoamHorizontalField SampleFoamHorizontalField(float2 uv, uint cascadeIndex, float mipLevel)
+{
+    FoamHorizontalField field;
+    field.displacement = SampleWaterWaveFieldLevel(
+        uv,
+        (int)cascadeIndex,
+        WATER_WAVE_DISPLACEMENT_SLICE,
+        mipLevel).yz;
+    field.gradient = SampleWaterWaveFieldLevel(
+        uv,
+        (int)cascadeIndex,
+        WATER_WAVE_DEFORMATION_GRADIENT_SLICE,
+        mipLevel);
+    return field;
+}
+
+float4 WeightFoamHorizontalField(FoamHorizontalField field, float blend, float2 blendGradient)
+{
+    return field.gradient * blend
+        + float4(
+            field.displacement.x * blendGradient.x,
+            field.displacement.x * blendGradient.y,
+            field.displacement.y * blendGradient.x,
+            field.displacement.y * blendGradient.y);
+}
+
+float4 EvaluateCascadeHorizontalGradientNoCurrent(float2 surfacePosition, uint cascadeIndex, uint foamSlice)
+{
+    float4 scaleOffset = GetWaterCascadeScaleOffset((int)cascadeIndex);
+    float mipLevel = EvaluateFoamSourceMipLevel(cascadeIndex, foamSlice);
+    return SampleFoamHorizontalField(
+        surfacePosition * scaleOffset.xy - scaleOffset.zw,
+        cascadeIndex,
+        mipLevel).gradient;
+}
+
+float4 EvaluateCascadeHorizontalGradient(float2 surfacePosition, uint cascadeIndex, uint foamSlice)
+{
+    float4 gradient = EvaluateCascadeHorizontalGradientNoCurrent(surfacePosition, cascadeIndex, foamSlice);
+#if !defined(FOAM_NO_CURRENT)
+    if (_WaterCurrentMapInfluence > 1e-4)
+    {
+        WaterCurrentData currentData;
+        ZERO_INITIALIZE(WaterCurrentData, currentData);
+        EvaluateWaterCurrentDataWithGradient(surfacePosition, currentData);
+
+        float4 currentCoordinates = 0.0;
+        BuildWaterCurrentSamplingCoordinates(surfacePosition, currentData.sectorIndex, currentCoordinates);
+        float4 direction = _WaterCurrentSectorSwizzles[currentData.sectorIndex + 8u];
+        float4 scaleOffset = GetWaterCascadeScaleOffset((int)cascadeIndex);
+        float mipLevel = EvaluateFoamSourceMipLevel(cascadeIndex, foamSlice);
+
+        FoamHorizontalField primary = RotateFoamHorizontalField(
+            SampleFoamHorizontalField(
+                currentCoordinates.xy * scaleOffset.xy - scaleOffset.zw,
+                cascadeIndex,
+                mipLevel),
+            float4(direction.xy, -direction.y, direction.x));
+        FoamHorizontalField secondary = RotateFoamHorizontalField(
+            SampleFoamHorizontalField(
+                currentCoordinates.zw * scaleOffset.xy - scaleOffset.zw,
+                cascadeIndex,
+                mipLevel),
+            float4(direction.zw, -direction.w, direction.z));
+
+        gradient = WeightFoamHorizontalField(primary, 1.0 - currentData.sectorBlend, -currentData.sectorBlendGradient)
+            + WeightFoamHorizontalField(secondary, currentData.sectorBlend, currentData.sectorBlendGradient);
+    }
+#endif
+    return gradient;
+}
+
+float4 SampleFoamSourceOverflow(uint slice, float2 position, bool sourceIsCurrent, float border)
+{
+    uint lodCount = WaterFoamLodCount();
+    float4 foam = 0.0;
+    float3 uv = WaterFoamCascadeWorldToUV(slice, position, !sourceIsCurrent);
+
+    if (WaterFoamCascadeContains(uv.xy, border))
+    {
+        foam = _FoamSource.SampleLevel(sampler_LinearClamp, uv, 0.0);
+    }
+    else if (slice + 1u < lodCount)
+    {
+        uint nextSlice = slice + 1u;
+        uv = WaterFoamCascadeWorldToUV(nextSlice, position, !sourceIsCurrent);
+        if (WaterFoamCascadeContains(uv.xy, border))
+            foam = _FoamSource.SampleLevel(sampler_LinearClamp, uv, 0.0);
+    }
+
+    return foam;
+}
+
+float2 EvaluateFoamAdvectionVelocity(float2 positionOS)
+{
+    float2 velocity = _WaterFoamAdvectionVelocity.xy;
+#if !defined(FOAM_NO_CURRENT)
+    if (_WaterCurrentMapInfluence > 1e-4 && _WaterFoamAdvectionVelocity.z > 0.0)
+    {
+        WaterCurrentData flowData;
+        EvaluateWaterCurrentData(positionOS, flowData);
+        float angle = _WaterReferenceOrientation.x + flowData.angle;
+        velocity = float2(cos(angle), sin(angle)) * _WaterFoamAdvectionVelocity.z;
+    }
+#endif
+    return velocity;
+}
+
+float4 LoadFoamHistory(uint slice0, float2 worldPosXZ, float simDeltaTime)
+{
+    float4 foam = 0.0;
+    if (_FoamSourceValid != 0)
+    {
+        float2 positionXZ = worldPosXZ;
+        if (simDeltaTime > 0.0)
+            positionXZ -= simDeltaTime * EvaluateFoamAdvectionVelocity(worldPosXZ);
+
+        uint count = WaterFoamLodCount();
+        int sourceSlice = clamp((int)slice0 + _FoamLodScaleShift, 0, (int)count - 1);
+        foam = SampleFoamSourceOverflow(
+            (uint)sourceSlice,
+            positionXZ,
+            _FoamSourceIsCurrent != 0,
+            1.0);
+    }
+    return foam;
+}
+
+[numthreads(8, 8, 1)]
+void WaterReprojectFoam(uint3 id : SV_DispatchThreadID)
+{
+    uint count = WaterFoamLodCount();
+    uint resolution = (uint)WaterFoamResolution();
+    if (id.x >= resolution || id.y >= resolution || id.z >= count)
+        return;
+
+    float2 worldPosXZ = WaterFoamCascadeIDToWorld(id.z, id.xy, false);
+    float4 foam = LoadFoamHistory(id.z, worldPosXZ, 0.0);
+    _FoamTarget[id] = saturate(all(isfinite(foam)) ? foam : 0.0);
+}
+
+float EvaluateCascadeFoamSource(float2 worldPosXZ, uint cascadeIndex, uint foamSlice)
+{
+    float source = 0.0;
+    if (cascadeIndex < _WaterActiveCascadeCount)
+    {
+        float4 gradient = EvaluateCascadeHorizontalGradient(worldPosXZ, cascadeIndex, foamSlice);
+        float jacobian = (1.0 + gradient.x) * (1.0 + gradient.w) - gradient.y * gradient.z;
+        float whitecap = max(_CascadeWhitecap[cascadeIndex], 0.0);
+        float folding = max(0.0, whitecap - jacobian);
+        float compression = max(0.0, 1.0 - jacobian);
+        source = folding + compression * saturate(whitecap) * 0.35;
+    }
+    return source;
+}
+
+float AdvanceCascadeFoam(float history, float source, float amount, float deltaTime, bool prewarm)
+{
+    float value = history;
+    float dt = deltaTime;
+    if (prewarm && dt <= 0.0)
+        dt = 1.0 / 30.0;
+    if (dt > 0.0)
+    {
+        float grow = dt * amount * 7.5;
+        float decay = dt * max(0.5, 10.0 - amount) * 1.15;
+        float retention = exp(-decay);
+        value = prewarm
+            ? source * grow / max(1.0 - retention, 1e-5)
+            : history * retention + source * grow;
+    }
+    return value;
+}
+
+void UpdateFoamCommon(uint3 id)
+{
+    uint count = WaterFoamLodCount();
+    uint resolution = (uint)WaterFoamResolution();
+    if (id.x >= resolution || id.y >= resolution || id.z >= count)
+        return;
+
+    float2 worldPosXZ = WaterFoamCascadeIDToWorld(id.z, id.xy, false);
+    float simDeltaTime = max(_WaterFoamTemporalParameters.x, 0.0);
+    float4 history = LoadFoamHistory(id.z, worldPosXZ, simDeltaTime);
+    bool prewarm = _FoamPrewarmingRequired != 0;
+    float4 result = history;
+
+    if (_WaterFoamEnabled != 0u)
+    {
+        [unroll]
+        for (uint cascadeIndex = 0u; cascadeIndex < WATER_CASCADE_COUNT; ++cascadeIndex)
+        {
+            float source = EvaluateCascadeFoamSource(worldPosXZ, cascadeIndex, id.z);
+            result[cascadeIndex] = AdvanceCascadeFoam(
+                history[cascadeIndex],
+                source,
+                _CascadeFoamAmount[cascadeIndex],
+                simDeltaTime,
+                prewarm);
+        }
+    }
+    else
+    {
+        result = 0.0;
+    }
+
+    result.w = 0.0;
+    _FoamTarget[id] = saturate(all(isfinite(result)) ? result : 0.0);
+}
+
+[numthreads(8, 8, 1)]
+void WaterUpdateFoam(uint3 id : SV_DispatchThreadID)
+{
+    UpdateFoamCommon(id);
+}
+
+[numthreads(8, 8, 1)]
+void WaterUpdateFoamNoCurrent(uint3 id : SV_DispatchThreadID)
+{
+    UpdateFoamCommon(id);
+}

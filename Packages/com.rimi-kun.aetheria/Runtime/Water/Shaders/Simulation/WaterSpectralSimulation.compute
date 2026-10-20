@@ -1,0 +1,458 @@
+#pragma kernel WaterCollapseSpectrumTransition WATER_KERNEL_COLLAPSE
+#pragma kernel WaterInitializeDirectionalNormalizationLut WATER_KERNEL_DIRECTIONAL_LUT
+#pragma kernel WaterInitializeDirectionalSpectrum WATER_KERNEL_INIT_SPECTRUM
+#pragma kernel WaterEvaluateTotalDispersion WATER_KERNEL_TOTAL_DISPERSION
+#pragma kernel WaterUnpackWaveCascade WATER_KERNEL_UNPACK
+#pragma only_renderers d3d11 vulkan
+
+#define WATER_SIMULATION
+#define WATER_EARTH_GRAVITY 9.81
+#define WATER_SPECTRAL_DEPTH 20.0
+#define WATER_DIRECTIONAL_NORMALIZATION_LUT_SIZE 1024
+#define WATER_DIRECTIONAL_NORMALIZATION_INTEGRATION_STEPS 256
+#define WATER_DIRECTIONAL_RATIO_MIN 0.005
+#define WATER_DIRECTIONAL_RATIO_MAX 128.0
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "../../Core/WaterShaderVariables.cs.hlsl"
+
+uint _CascadeIndex;
+float _SpectrumUpdateDeltaTime;
+int _PreviousSpectrumValid;
+float4 _CascadeWhitecap;
+
+float2 ComplexExponential(float arg)
+{
+    float sine;
+    float cosine;
+    sincos(arg, sine, cosine);
+    return float2(cosine, sine);
+}
+
+float2 ComplexMultiply(float2 a, float2 b)
+{
+    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+float2 ComplexConjugate(float2 value)
+{
+    return float2(value.x, -value.y);
+}
+
+float4 GetCascadeGrid(uint cascadeIndex)
+{
+    float4 value = 0.0;
+    if (cascadeIndex == 0u)
+        value = _WaterCascade0Grid;
+    else if (cascadeIndex == 1u)
+        value = _WaterCascade1Grid;
+    else
+        value = _WaterCascade2Grid;
+    return value;
+}
+
+float4 GetCascadeSpectrum(uint cascadeIndex)
+{
+    float4 value = 0.0;
+    if (cascadeIndex == 0u)
+        value = _WaterCascade0Spectrum;
+    else if (cascadeIndex == 1u)
+        value = _WaterCascade1Spectrum;
+    else
+        value = _WaterCascade2Spectrum;
+    return value;
+}
+
+float4 GetCascadeShape(uint cascadeIndex)
+{
+    float4 value = 0.0;
+    if (cascadeIndex == 0u)
+        value = _WaterCascade0Shape;
+    else if (cascadeIndex == 1u)
+        value = _WaterCascade1Shape;
+    else
+        value = _WaterCascade2Shape;
+    return value;
+}
+
+uint GetCascadeSeed(uint cascadeIndex)
+{
+    uint value = 0u;
+    if (cascadeIndex == 0u)
+        value = _WaterCascade0Seed;
+    else if (cascadeIndex == 1u)
+        value = _WaterCascade1Seed;
+    else
+        value = _WaterCascade2Seed;
+    return value;
+}
+
+float GetCascadeDisplacementScale(uint cascadeIndex)
+{
+    float value = 0.0;
+    if (cascadeIndex == 0u)
+        value = _WaterCascade0ScalesFade.x;
+    else if (cascadeIndex == 1u)
+        value = _WaterCascade1ScalesFade.x;
+    else
+        value = _WaterCascade2ScalesFade.x;
+    return value;
+}
+
+uint2 MirrorSpectrumCoordinate(uint2 coordinate)
+{
+    uint resolution = _WaterSimulationResolution;
+    uint mask = resolution - 1u;
+    return uint2((resolution - coordinate.x) & mask, (resolution - coordinate.y) & mask);
+}
+
+float WrapAngle(float angle)
+{
+    return angle - TWO_PI * floor((angle + PI) / TWO_PI);
+}
+
+void EvaluateDispersionRelation(float k, out float omega, out float dOmegaDk)
+{
+    float kh = min(k * WATER_SPECTRAL_DEPTH, 20.0);
+    float tanhKh = tanh(kh);
+    float sechKh = rcp(cosh(kh));
+    omega = sqrt(WATER_EARTH_GRAVITY * k * tanhKh);
+    dOmegaDk = WATER_EARTH_GRAVITY * (tanhKh + kh * sechKh * sechKh) / max(2.0 * omega, 1e-6);
+}
+
+float EvaluateTmaAttenuation(float k)
+{
+    float attenuation = 1.0;
+    float kh = k * WATER_SPECTRAL_DEPTH;
+    if (kh < 10.0)
+    {
+        float tanhKh = tanh(kh);
+        float sinh2Kh = sinh(2.0 * kh);
+        float ratio = abs(sinh2Kh) > 1e-6 ? 2.0 * kh / sinh2Kh : 1.0;
+        float denominator = 1.0 + ratio;
+        attenuation = tanhKh * tanhKh / max(denominator, 1e-6);
+    }
+    return attenuation;
+}
+
+float EvaluateJonswap(float omega, float k, float alpha, float peakOmega)
+{
+    float density = 0.0;
+    if (omega > 0.0 && peakOmega > 0.0)
+    {
+        float sigma = omega <= peakOmega ? 0.07 : 0.09;
+        float normalizedOffset = (omega - peakOmega) / (sigma * peakOmega);
+        float peakSharpening = pow(3.3, exp(-0.5 * normalizedOffset * normalizedOffset));
+        float ratio = peakOmega / omega;
+        float ratio2 = ratio * ratio;
+        float omega2 = omega * omega;
+        float omega5 = omega2 * omega2 * omega;
+        density = alpha * WATER_EARTH_GRAVITY * WATER_EARTH_GRAVITY / omega5
+            * exp(-1.25 * ratio2 * ratio2) * peakSharpening * EvaluateTmaAttenuation(k);
+    }
+    return density;
+}
+
+float EvaluateHasselmannShape(float omegaRatio, float windSpeed, float peakOmega)
+{
+    float ratio = max(omegaRatio, 1e-5);
+    float shape = 6.97 * pow(ratio, 4.06);
+    if (omegaRatio >= 1.05)
+    {
+        float exponent = -2.33 - 1.45 * (windSpeed * peakOmega / WATER_EARTH_GRAVITY - 1.17);
+        shape = 9.77 * pow(ratio, exponent);
+    }
+    return shape;
+}
+
+float EvaluateDirectionalExponent(float omegaRatio, float windSpeed, float peakOmega, float swell)
+{
+    float baseShape = EvaluateHasselmannShape(omegaRatio, windSpeed, peakOmega);
+    float swellShape = 16.1 * tanh(rcp(max(omegaRatio, 1e-5))) * swell * swell;
+    return max(baseShape + swellShape, 0.0);
+}
+
+float EvaluateLonguetHigginsLobe(float theta, float exponent)
+{
+    return pow(max(abs(cos(theta * 0.5)), 1e-7), 2.0 * exponent);
+}
+
+#if defined(WATER_KERNEL_DIRECTIONAL_LUT)
+RWTexture2D<float> _DirectionalNormalizationLutRW;
+
+[numthreads(8, 1, 1)]
+void WaterInitializeDirectionalNormalizationLut(uint3 thread : SV_DispatchThreadID)
+{
+    if (thread.x >= WATER_DIRECTIONAL_NORMALIZATION_LUT_SIZE || thread.y >= 3u)
+        return;
+    float coordinate = thread.x / (WATER_DIRECTIONAL_NORMALIZATION_LUT_SIZE - 1.0);
+    float omegaRatio = exp(lerp(log(WATER_DIRECTIONAL_RATIO_MIN), log(WATER_DIRECTIONAL_RATIO_MAX), coordinate));
+    float4 spectrum = GetCascadeSpectrum(thread.y);
+    float4 shape = GetCascadeShape(thread.y);
+    float exponent = EvaluateDirectionalExponent(omegaRatio, spectrum.z, spectrum.y, shape.x);
+    float integrationStep = TWO_PI / WATER_DIRECTIONAL_NORMALIZATION_INTEGRATION_STEPS;
+    float integral = 0.0;
+    [loop]
+    for (int i = 0; i < WATER_DIRECTIONAL_NORMALIZATION_INTEGRATION_STEPS; ++i)
+    {
+        float theta = -PI + (i + 0.5) * integrationStep;
+        integral += EvaluateLonguetHigginsLobe(theta, exponent);
+    }
+    _DirectionalNormalizationLutRW[thread.xy] = rcp(max(integral * integrationStep, 1e-6));
+}
+#endif
+
+#if defined(WATER_KERNEL_INIT_SPECTRUM)
+Texture2D<float> _DirectionalNormalizationLut;
+RWTexture2D<float4> _SpectrumRW;
+Texture2D<float4> _PreviousSpectrum;
+
+float SampleDirectionalNormalization(float omegaRatio, uint cascadeIndex)
+{
+    float coordinate = saturate(
+        (log(max(omegaRatio, WATER_DIRECTIONAL_RATIO_MIN)) - log(WATER_DIRECTIONAL_RATIO_MIN))
+        / (log(WATER_DIRECTIONAL_RATIO_MAX) - log(WATER_DIRECTIONAL_RATIO_MIN)))
+        * (WATER_DIRECTIONAL_NORMALIZATION_LUT_SIZE - 1.0);
+    uint x0 = (uint)floor(coordinate);
+    uint x1 = min(x0 + 1u, WATER_DIRECTIONAL_NORMALIZATION_LUT_SIZE - 1u);
+    float t = frac(coordinate);
+    return lerp(
+        _DirectionalNormalizationLut.Load(int3(x0, cascadeIndex, 0)),
+        _DirectionalNormalizationLut.Load(int3(x1, cascadeIndex, 0)),
+        t);
+}
+
+uint4 HashSpectrumCoordinate(uint3 coordinate, uint seed)
+{
+    uint4 x = coordinate.xyzz + uint4(seed, seed * 747796405u, seed * 2891336453u, seed ^ 0x9e3779b9u);
+    x = ((x >> 16u) ^ x.yzxy) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x.yzxz) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x.yzxx) * 0x45d9f3bu;
+    return x;
+}
+
+float4 SampleSpectrumRandom(uint3 coordinate, uint seed)
+{
+    return ((float4)HashSpectrumCoordinate(coordinate, seed) + 0.5) * (1.0 / 4294967296.0);
+}
+
+float SampleStandardGaussian(float u, float v)
+{
+    return sqrt(-2.0 * log(max(u, 1e-7))) * cos(TWO_PI * v);
+}
+
+[numthreads(8, 8, 1)]
+void WaterInitializeDirectionalSpectrum(uint3 thread : SV_DispatchThreadID)
+{
+    if (thread.x >= _WaterSimulationResolution || thread.y >= _WaterSimulationResolution)
+        return;
+    int2 coordinate = int2(thread.xy);
+    float4 grid = GetCascadeGrid(_CascadeIndex);
+    float4 spectrum = GetCascadeSpectrum(_CascadeIndex);
+    float4 shape = GetCascadeShape(_CascadeIndex);
+    float2 centeredIndex = (float2)thread.xy - _WaterSimulationResolution * 0.5;
+    float2 k = centeredIndex * grid.zw;
+    float kMagnitude = length(k);
+    if (kMagnitude <= 1e-7)
+    {
+        _SpectrumRW[coordinate] = 0.0;
+        return;
+    }
+
+    float omega;
+    float dOmegaDk;
+    EvaluateDispersionRelation(kMagnitude, omega, dOmegaDk);
+    float omegaRatio = omega / max(spectrum.y, 1e-6);
+    float relativeTheta = WrapAngle(atan2(k.y, k.x) - spectrum.w);
+    float exponent = EvaluateDirectionalExponent(omegaRatio, spectrum.z, spectrum.y, shape.x);
+    float directional = EvaluateLonguetHigginsLobe(relativeTheta, exponent)
+        * SampleDirectionalNormalization(omegaRatio, _CascadeIndex);
+    directional = lerp(1.0 / TWO_PI, directional, 1.0 - saturate(shape.y));
+    float detailWidth = 1.0 - saturate(shape.z);
+    float detail = exp(-detailWidth * detailWidth * kMagnitude * kMagnitude);
+    float density = EvaluateJonswap(omega, kMagnitude, spectrum.x, spectrum.y)
+        * directional * detail * (dOmegaDk / kMagnitude) * grid.z * grid.w;
+
+    float4 randomValues = SampleSpectrumRandom(uint3(thread.xy, _CascadeIndex), GetCascadeSeed(_CascadeIndex));
+    float2 gaussian = float2(
+        SampleStandardGaussian(randomValues.x, randomValues.y),
+        SampleStandardGaussian(randomValues.z, randomValues.w));
+    float2 h0 = 0.5 * sqrt(max(density, 0.0)) * gaussian;
+    uint2 mirror = MirrorSpectrumCoordinate(thread.xy);
+    if (all(mirror == thread.xy))
+        h0 = 0.0;
+    float phase = _PreviousSpectrumValid != 0
+        ? _PreviousSpectrum[coordinate].z
+        : frac(omega * (_WaterSimulationTime - _SpectrumUpdateDeltaTime) / TWO_PI) * TWO_PI;
+    _SpectrumRW[coordinate] = float4(h0, phase, omega);
+}
+#endif
+
+float2 EvolveHermitianMode(float4 mode, float2 mirroredH0)
+{
+    float2 forward = ComplexExponential(-mode.z);
+    return ComplexMultiply(mode.xy, forward)
+        + ComplexMultiply(ComplexConjugate(mirroredH0), ComplexConjugate(forward));
+}
+
+float2 BlendVisibleMode(float2 previousHt, float2 currentHt, float blend, bool normalizeIndependent)
+{
+    float2 weights = float2(1.0 - blend, blend);
+    if (normalizeIndependent)
+        weights *= rsqrt(max(dot(weights, weights), 1e-6));
+    return weights.x * previousHt + weights.y * currentHt;
+}
+
+#if defined(WATER_KERNEL_COLLAPSE)
+Texture2D<float4> _Spectrum;
+RWTexture2D<float4> _PreviousSpectrumRW;
+float _SpectrumCollapseBlend;
+int _SpectrumCollapseRequiresNormalization;
+
+[numthreads(8, 8, 1)]
+void WaterCollapseSpectrumTransition(uint3 thread : SV_DispatchThreadID)
+{
+    if (thread.x >= _WaterSimulationResolution || thread.y >= _WaterSimulationResolution)
+        return;
+    uint2 mirror = MirrorSpectrumCoordinate(thread.xy);
+    if (thread.y > mirror.y || (thread.y == mirror.y && thread.x > mirror.x))
+        return;
+    int2 coordinate = int2(thread.xy);
+    int2 mirrorCoordinate = int2(mirror);
+    if (all(mirror == thread.xy))
+    {
+        _PreviousSpectrumRW[coordinate] = 0.0;
+        return;
+    }
+
+    float4 previous = _PreviousSpectrumRW[coordinate];
+    float4 previousMirror = _PreviousSpectrumRW[mirrorCoordinate];
+    float4 current = _Spectrum[coordinate];
+    float4 currentMirror = _Spectrum[mirrorCoordinate];
+    float2 previousHt = EvolveHermitianMode(previous, previousMirror.xy);
+    float2 currentHt = EvolveHermitianMode(current, currentMirror.xy);
+    float2 visibleHt = BlendVisibleMode(previousHt, currentHt, _SpectrumCollapseBlend,
+        _SpectrumCollapseRequiresNormalization != 0);
+    float2 phaseRotation = ComplexExponential(current.z);
+    float2 collapsedH0 = 0.5 * ComplexMultiply(visibleHt, phaseRotation);
+    float2 collapsedMirrorH0 = 0.5 * ComplexMultiply(ComplexConjugate(visibleHt), phaseRotation);
+    _PreviousSpectrumRW[coordinate] = float4(collapsedH0, current.zw);
+    _PreviousSpectrumRW[mirrorCoordinate] = float4(collapsedMirrorH0, current.zw);
+}
+#endif
+
+#if defined(WATER_KERNEL_TOTAL_DISPERSION)
+RWTexture2D<float4> _SpectrumRW;
+RWTexture2D<float4> _PreviousSpectrumRW;
+RWTexture2D<float4> _EvolvedSpectrumRealOutput;
+RWTexture2D<float4> _EvolvedSpectrumImaginaryOutput;
+
+float2 PackRealFields(float2 a, float2 b)
+{
+    return float2(a.x - b.y, a.y + b.x);
+}
+
+[numthreads(8, 8, 1)]
+void WaterEvaluateTotalDispersion(uint3 thread : SV_DispatchThreadID)
+{
+    if (thread.x >= _WaterSimulationResolution || thread.y >= _WaterSimulationResolution)
+        return;
+    int2 coordinate = int2(thread.xy);
+    int2 mirrorCoordinate = int2(MirrorSpectrumCoordinate(thread.xy));
+    float4 current = _SpectrumRW[coordinate];
+    float4 currentMirror = _SpectrumRW[mirrorCoordinate];
+    current.z = frac((current.z + current.w * _SpectrumUpdateDeltaTime) / TWO_PI) * TWO_PI;
+    _SpectrumRW[coordinate] = current;
+    float2 ht = EvolveHermitianMode(current, currentMirror.xy);
+
+    if (_PreviousSpectrumValid != 0)
+    {
+        float4 previous = _PreviousSpectrumRW[coordinate];
+        float4 previousMirror = _PreviousSpectrumRW[mirrorCoordinate];
+        previous.z = frac((previous.z + previous.w * _SpectrumUpdateDeltaTime) / TWO_PI) * TWO_PI;
+        _PreviousSpectrumRW[coordinate] = previous;
+        float2 previousHt = EvolveHermitianMode(previous, previousMirror.xy);
+        ht = BlendVisibleMode(previousHt, ht, _WaterSpectrumBlend,
+            _WaterSpectrumBlendRequiresNormalization != 0u);
+    }
+
+    float4 grid = GetCascadeGrid(_CascadeIndex);
+    float2 centeredIndex = (float2)thread.xy - _WaterSimulationResolution * 0.5;
+    float2 k = centeredIndex * grid.zw;
+    float kMagnitude = length(k);
+    if (kMagnitude <= 1e-7)
+    {
+        _EvolvedSpectrumRealOutput[coordinate] = 0.0;
+        _EvolvedSpectrumImaginaryOutput[coordinate] = 0.0;
+        return;
+    }
+
+    float2 kDirection = k / kMagnitude;
+    float2 iH = float2(-ht.y, ht.x);
+    float2 displacementX = iH * kDirection.x;
+    float2 displacementZ = iH * kDirection.y;
+    float2 heightDx = iH * k.x;
+    float2 heightDz = iH * k.y;
+    float2 displacementXdx = -ht * (k.x * kDirection.x);
+    float2 displacementXdz = -ht * (k.y * kDirection.x);
+    float2 displacementZdz = -ht * (k.y * kDirection.y);
+
+    float2 packed0 = PackRealFields(ht, displacementX);
+    float2 packed1 = PackRealFields(displacementZ, heightDx);
+    float2 packed2 = PackRealFields(heightDz, displacementXdx);
+    float2 packed3 = PackRealFields(displacementXdz, displacementZdz);
+    _EvolvedSpectrumRealOutput[coordinate] = float4(packed0.x, packed1.x, packed2.x, packed3.x);
+    _EvolvedSpectrumImaginaryOutput[coordinate] = float4(packed0.y, packed1.y, packed2.y, packed3.y);
+}
+#endif
+
+#if defined(WATER_KERNEL_UNPACK)
+Texture2D<float4> _SpatialWaveFieldRealInput;
+Texture2D<float4> _SpatialWaveFieldImaginaryInput;
+RWTexture2DArray<float4> _WaterWaveField;
+
+[numthreads(8, 8, 1)]
+void WaterUnpackWaveCascade(uint3 thread : SV_DispatchThreadID)
+{
+    if (thread.x >= _WaterSimulationResolution || thread.y >= _WaterSimulationResolution)
+        return;
+    int2 coordinate = int2(thread.xy);
+    float signCorrection = ((thread.x + thread.y) & 1u) != 0u ? -1.0 : 1.0;
+    float4 evenFields = _SpatialWaveFieldRealInput[coordinate] * signCorrection;
+    float4 oddFields = _SpatialWaveFieldImaginaryInput[coordinate] * signCorrection;
+    float height = evenFields.x;
+    float displacementX = oddFields.x;
+    float displacementZ = evenFields.y;
+    float heightDx = oddFields.y;
+    float heightDz = evenFields.z;
+    float displacementXdx = oddFields.z;
+    float displacementXdz = evenFields.w;
+    float displacementZdz = oddFields.w;
+
+    float3 tangentX = float3(1.0 + displacementXdx, heightDx, displacementXdz);
+    float3 tangentZ = float3(displacementXdz, heightDz, 1.0 + displacementZdz);
+    float3 normal = cross(tangentZ, tangentX);
+    float normalY = normal.y >= 0.0 ? max(normal.y, 1e-4) : min(normal.y, -1e-4);
+    float2 shadingSlope = -normal.xz / normalY;
+
+    float displacementScale = GetCascadeDisplacementScale(_CascadeIndex);
+    float3 geometryTangentX = float3(
+        1.0 + displacementXdx * displacementScale,
+        heightDx * displacementScale,
+        displacementXdz * displacementScale);
+    float3 geometryTangentZ = float3(
+        displacementXdz * displacementScale,
+        heightDz * displacementScale,
+        1.0 + displacementZdz * displacementScale);
+    float3 geometryNormal = cross(geometryTangentZ, geometryTangentX);
+    float geometryNormalY = geometryNormal.y >= 0.0 ? max(geometryNormal.y, 1e-4) : min(geometryNormal.y, -1e-4);
+    float2 geometrySlope = -geometryNormal.xz / geometryNormalY;
+
+    float jacobian = (1.0 + displacementXdx) * (1.0 + displacementZdz) - displacementXdz * displacementXdz;
+    float breakingSource = max(0.0, max(_CascadeWhitecap[_CascadeIndex], 0.0) - jacobian);
+
+    _WaterWaveField[uint3(thread.xy, 0u)] = float4(height, displacementX, displacementZ, breakingSource);
+    _WaterWaveField[uint3(thread.xy, 1u)] = float4(displacementXdx, displacementXdz, displacementXdz, displacementZdz);
+    _WaterWaveField[uint3(thread.xy, 2u)] = float4(shadingSlope, geometrySlope);
+}
+#endif

@@ -1,0 +1,123 @@
+#pragma kernel Trace TRACE_KERNEL=Trace CLOUDS_SIMPLE_PRESET
+#pragma kernel TraceMicroErosion TRACE_KERNEL=TraceMicroErosion CLOUDS_MICRO_EROSION CLOUDS_SIMPLE_PRESET
+#pragma kernel TraceSparseFullResolution TRACE_KERNEL=TraceSparseFullResolution CLOUDS_SIMPLE_PRESET CLOUDS_SPARSE_FULL_RESOLUTION
+#pragma kernel TraceSparseFullResolutionMicroErosion TRACE_KERNEL=TraceSparseFullResolutionMicroErosion CLOUDS_MICRO_EROSION CLOUDS_SIMPLE_PRESET CLOUDS_SPARSE_FULL_RESOLUTION
+
+#pragma target 4.5
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DepthPyramidSampling.hlsl"
+#define VOLUMETRIC_CLOUDS_TRACE_THREAD_GROUP_SIZE 8
+
+TEXTURE2D(_CloudLutTexture);
+TEXTURE3D(_CloudShapeNoise);
+TEXTURE3D(_CloudDetailNoise);
+float4 _CloudViewDirOriginWS;
+float4 _CloudViewDirStepXWS;
+float4 _CloudViewDirStepYWS;
+int _CloudIntermediateToFinalScale;
+RWTexture2D<float3> _CloudIntermediateTexture;
+RWTexture2D<float2> _CloudTraceDataTexture;
+
+
+#include "../../ShaderLibrary/Clouds/VolumetricClouds.hlsl"
+#include "../../ShaderLibrary/Atmosphere/SceneComposite.hlsl"
+
+float LoadIntermediateSceneDepth(uint2 intermediateCoord)
+{
+    return _CloudIntermediateToFinalScale == 1
+        ? DepthPyramidLoadNearest(int2(intermediateCoord), 0)
+        : DepthPyramidLoadCheckerboard(int2(intermediateCoord), 1);
+}
+
+[numthreads(VOLUMETRIC_CLOUDS_TRACE_THREAD_GROUP_SIZE, VOLUMETRIC_CLOUDS_TRACE_THREAD_GROUP_SIZE, 1)]
+void TRACE_KERNEL(uint3 dispatchThreadId : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
+{
+    LoadCloudLutToLDS(groupIndex);
+
+    uint2 traceSize = (uint2)_CloudTraceSize.xy;
+    uint2 traceCoord;
+
+#if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+    // Compact 1/8 final-resolution tracing: one dispatched thread owns a pair
+    // of horizontal trace texels. It explicitly invalidates one and traces the
+    // other, so the dispatch itself is half-width rather than half-idle.
+    uint2 tracePairBase = uint2(dispatchThreadId.x * 2u, dispatchThreadId.y);
+    if (tracePairBase.y >= traceSize.y || tracePairBase.x >= traceSize.x)
+        return;
+
+    uint traceParity = (tracePairBase.y + (uint)_AccumulationFrameIndex) & 1u;
+    traceCoord = tracePairBase + uint2(traceParity, 0u);
+    uint2 invalidCoord = tracePairBase + uint2(1u - traceParity, 0u);
+    if (invalidCoord.x < traceSize.x)
+    {
+        _CloudIntermediateTexture[invalidCoord] = 0.0f;
+        _CloudTraceDataTexture[invalidCoord] = float2(-1.0f, 1.0f);
+    }
+
+    if (traceCoord.x >= traceSize.x)
+        return;
+#else
+    traceCoord = dispatchThreadId.xy;
+    if (any(traceCoord >= traceSize))
+        return;
+#endif
+
+    uint2 checkerOffset = ComputeCheckerBoardOffset(traceCoord, (uint)_SubPixelIndex);
+    uint2 intermediateSize = (uint2)_CloudIntermediateSize.xy;
+    uint2 sampleCoord = min(traceCoord * 2u + checkerOffset, intermediateSize - 1u);
+    uint2 finalSize = (uint2)_CloudFinalSize.xy;
+    uint2 finalCoord = min(
+        sampleCoord * (uint)_CloudIntermediateToFinalScale,
+        finalSize - 1u);
+    float sceneDepth = LoadIntermediateSceneDepth(sampleCoord);
+
+    float3 cloudsLighting = 0.0f;
+    float2 cloudsData = float2(UNITY_RAW_FAR_CLIP_VALUE, 1.0f);
+    bool isOccluded = sceneDepth != UNITY_RAW_FAR_CLIP_VALUE;
+
+    float3 unnormalizedViewDirWS =
+        _CloudViewDirOriginWS.xyz
+        + _CloudViewDirStepXWS.xyz * finalCoord.x
+        + _CloudViewDirStepYWS.xyz * finalCoord.y;
+    float3 invViewDirWS = unnormalizedViewDirWS
+        * rsqrt(dot(unnormalizedViewDirWS, unnormalizedViewDirWS));
+    float viewForwardCos = dot(invViewDirWS, -UNITY_MATRIX_V[2].xyz);
+
+    float maxRayLength = FLT_MAX;
+    if (isOccluded)
+    {
+#if !UNITY_REVERSED_Z
+        sceneDepth = lerp(UNITY_NEAR_CLIP_VALUE, 1.0f, sceneDepth);
+#endif
+        maxRayLength = LinearEyeDepth(sceneDepth, _ZBufferParams) * rcp(viewForwardCos);
+    }
+
+    CloudRay cloudRay = BuildCloudsRay(sampleCoord, invViewDirWS, maxRayLength);
+    VolumetricRayResult result = (VolumetricRayResult)0;
+    result.transmittance = 1.0f;
+    result.meanDistance = FLT_MAX;
+    result.invalidRay = true;
+    TraceVolumetricRay(cloudRay, result);
+
+    if (!result.invalidRay)
+    {
+        float2 screenUV = (float2(finalCoord) + 0.5f) * _CloudFinalSize.zw;
+        float cloudViewDepth = result.meanDistance * viewForwardCos;
+        float cloudTransmittance = saturate(result.transmittance);
+        SceneCompositeCoefficients atmosphereAtCloud =
+            SampleAtmosphereCompositeCoefficients(
+                screenUV,
+                cloudViewDepth * _CloudDistanceReciprocals.z);
+        cloudsLighting = max(
+            result.scattering.xyz * atmosphereAtCloud.transmittance +
+            atmosphereAtCloud.additiveRadiance * (1.0f - cloudTransmittance),
+            0.0f);
+        cloudsData = float2(
+            EncodeInfiniteVolumetricDepth(cloudViewDepth, _CloudNearPlane),
+            cloudTransmittance);
+    }
+
+    _CloudIntermediateTexture[traceCoord] = cloudsLighting;
+    _CloudTraceDataTexture[traceCoord] = cloudsData;
+}

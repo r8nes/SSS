@@ -1,0 +1,46 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 42a0ffa26c1240e9b8d8b80a21cac8e7, type: 3}
+  m_Name: PostProcessingQuality
+  m_EditorClassIdentifier: 
+  _id:
+    _a: -1127759223
+    _b: -590264710
+    _c: -1775967633
+    _d: 178485348
+  _displayName: Post-Processing Quality
+  _category: Post Processing
+  _tiers:
+  - Id:
+      _a: 1856453751
+      _b: -1212330345
+      _c: -1570047912
+      _d: -1480907682
+    DisplayName: Low
+    BloomPatch: {fileID: 0}
+    MotionBlurSamplingPatch: {fileID: 11400000, guid: 74758fde2151dfc41a50b7238a77e954, type: 2}
+  - Id:
+      _a: -335799117
+      _b: 412895087
+      _c: -1082010773
+      _d: 1448927792
+    DisplayName: Medium
+    BloomPatch: {fileID: 0}
+    MotionBlurSamplingPatch: {fileID: 11400000, guid: 6e12e2d68cc3fc34390fd7599577a379, type: 2}
+  - Id:
+      _a: -394925197
+      _b: 1569213674
+      _c: -1812661662
+      _d: -565260851
+    DisplayName: High
+    BloomPatch: {fileID: 0}
+    MotionBlurSamplingPatch: {fileID: 11400000, guid: aaec9ca9c2c42a849b5f01a0990153a3, type: 2}

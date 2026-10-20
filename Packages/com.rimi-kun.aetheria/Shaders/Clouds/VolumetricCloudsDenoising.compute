@@ -1,0 +1,558 @@
+#pragma kernel ResolveHistory RESOLVE_HISTORY_KERNEL=ResolveHistory
+#pragma kernel ResolveHistoryGhostReduction RESOLVE_HISTORY_KERNEL=ResolveHistoryGhostReduction CLOUD_GHOST_REDUCTION
+#pragma kernel ResolveHistorySparseFullResolution RESOLVE_HISTORY_KERNEL=ResolveHistorySparseFullResolution CLOUDS_SPARSE_FULL_RESOLUTION
+#pragma kernel ResolveHistorySparseFullResolutionGhostReduction RESOLVE_HISTORY_KERNEL=ResolveHistorySparseFullResolutionGhostReduction CLOUDS_SPARSE_FULL_RESOLUTION CLOUD_GHOST_REDUCTION
+#pragma kernel ResolveNoHistory
+
+#pragma target 4.5
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DepthPyramidSampling.hlsl"
+#include "../../ShaderLibrary/Clouds/VolumetricCloudsBlueNoise.hlsl"
+#include "../../ShaderLibrary/Common/VolumetricDepth.hlsl"
+#include "../../ShaderLibrary/Clouds/VolumetricCloudsBilateralUpscale.hlsl"
+
+#define VOLUMETRIC_THREAD_GROUP_SIZE 8
+#define LDS_UPSCALE_WIDTH 6
+
+groupshared float4 gs_upscaleLighting[36];
+groupshared float4 gs_upscaleData[36];
+
+Texture2D<float3> _SourceLightingTexture;
+Texture2D _SourceDataTexture;
+Texture2D<float3> _HistoryLightingTexture;
+Texture2D _HistoryDataTexture;
+RWTexture2D<float3> _OutputLightingTexture;
+RWTexture2D<float4> _OutputDataTexture;
+
+
+float4 _SourceSize;
+float4 _OutputSize;
+float4 _FullResolutionSize;
+float4 _HistoryViewportScale;
+float4x4 _PrevViewProjection;
+float4 _CloudViewDirOriginWS;
+float4 _CloudViewDirStepXWS;
+float4 _CloudViewDirStepYWS;
+float4 _CloudHistoryPositionOffsetWS;
+float _NearPlaneReprojection;
+float _HistoryInvalidation;
+float _TemporalAccumulationFactor;
+float _NearPlane;
+int _SubPixelIndex;
+int _OutputToFullResolutionScale;
+
+float LoadIntermediateSceneDepth(uint2 intermediateCoord)
+{
+    return _OutputToFullResolutionScale == 1
+        ? DepthPyramidLoadNearest(int2(intermediateCoord), 0)
+        : DepthPyramidLoadCheckerboard(int2(intermediateCoord), 1);
+}
+
+
+bool EvaluateRatioDepthDifference(float depthPrev, float depthCurr)
+{
+    bool sameDepthClass = (depthPrev == UNITY_RAW_FAR_CLIP_VALUE) ==
+        (depthCurr == UNITY_RAW_FAR_CLIP_VALUE);
+    bool depthMatches = false;
+    if (sameDepthClass)
+    {
+        float linearDepthP = Linear01Depth(depthPrev, _ZBufferParams);
+        float linearDepthC = max(
+            Linear01Depth(depthCurr, _ZBufferParams), 1.0e-6f);
+        depthMatches = abs(linearDepthP * rcp(linearDepthC) - 1.0f) <= 0.2f;
+    }
+    return sameDepthClass && depthMatches;
+}
+
+void StoreOutputLighting(uint2 outputCoord, float3 color)
+{
+    _OutputLightingTexture[outputCoord] = color;
+}
+
+float ReprojectPreviousCloudDepth(float previousRawDepth)
+{
+    return saturate(previousRawDepth * _NearPlaneReprojection);
+}
+
+uint UpscaleLdsAddress(uint2 groupThreadId, int2 offset)
+{
+    uint2 tapAddress = (uint2)((int2)(groupThreadId / 2u + 1u) + offset);
+    return clamp(tapAddress.x % LDS_UPSCALE_WIDTH + tapAddress.y * LDS_UPSCALE_WIDTH, 0u, 35u);
+}
+
+void LoadTraceUpscaleTap(int2 traceCoord, int weightIndex, out float4 value, out float sceneDepth, out float volumetricDepth, out float weight)
+{
+    int2 sourceMax = max(int2(_SourceSize.xy) - int2(1, 1), int2(0, 0));
+    traceCoord = clamp(traceCoord, int2(0, 0), sourceMax);
+
+    float3 lighting = _SourceLightingTexture[uint2(traceCoord)].rgb;
+    float2 traceData = _SourceDataTexture[uint2(traceCoord)].rg;
+    uint2 representativeCoord = uint2(traceCoord) * 2u
+        + ComputeCheckerBoardOffset(uint2(traceCoord), (uint)_SubPixelIndex);
+    representativeCoord = min(representativeCoord, (uint2)_OutputSize.xy - 1u);
+
+#if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+    bool sourceValid = traceData.x >= 0.0f;
+    value = sourceValid
+        ? float4(lighting, saturate(traceData.y))
+        : float4(0.0f, 0.0f, 0.0f, 1.0f);
+    sceneDepth = LoadIntermediateSceneDepth(representativeCoord);
+    volumetricDepth = sourceValid ? traceData.x : UNITY_RAW_FAR_CLIP_VALUE;
+    weight = sourceValid ? kDistanceBasedWeights3x3[weightIndex] : 0.0f;
+#else
+    value = float4(lighting, saturate(traceData.y));
+    sceneDepth = LoadIntermediateSceneDepth(representativeCoord);
+    volumetricDepth = traceData.x;
+    weight = kDistanceBasedWeights3x3[weightIndex];
+#endif
+}
+
+void FillTraceUpscaleNeighborhoodData(uint2 traceCoord, int subRegionIdx, out NeighborhoodUpsampleData3x3 data)
+{
+    int2 center = int2(traceCoord);
+    int weightBase = subRegionIdx * 9;
+
+    LoadTraceUpscaleTap(center + int2(-1, -1), weightBase + 0, data.lowValue0, data.lowDepthA.x, data.lowDepthValueA.x, data.lowWeightA.x);
+    LoadTraceUpscaleTap(center + int2(0, -1), weightBase + 1, data.lowValue1, data.lowDepthA.y, data.lowDepthValueA.y, data.lowWeightA.y);
+    LoadTraceUpscaleTap(center + int2(1, -1), weightBase + 2, data.lowValue2, data.lowDepthA.z, data.lowDepthValueA.z, data.lowWeightA.z);
+    LoadTraceUpscaleTap(center + int2(-1, 0), weightBase + 3, data.lowValue3, data.lowDepthA.w, data.lowDepthValueA.w, data.lowWeightA.w);
+    LoadTraceUpscaleTap(center, weightBase + 4, data.lowValue4, data.lowDepthB.x, data.lowDepthValueB.x, data.lowWeightB.x);
+    LoadTraceUpscaleTap(center + int2(1, 0), weightBase + 5, data.lowValue5, data.lowDepthB.y, data.lowDepthValueB.y, data.lowWeightB.y);
+    LoadTraceUpscaleTap(center + int2(-1, 1), weightBase + 6, data.lowValue6, data.lowDepthB.z, data.lowDepthValueB.z, data.lowWeightB.z);
+    LoadTraceUpscaleTap(center + int2(0, 1), weightBase + 7, data.lowValue7, data.lowDepthB.w, data.lowDepthValueB.w, data.lowWeightB.w);
+    LoadTraceUpscaleTap(center + int2(1, 1), weightBase + 8, data.lowValue8, data.lowDepthC, data.lowDepthValueC, data.lowWeightC);
+}
+
+float4 LoadHistoryLighting(float2 uv, float4 historyData)
+{
+    float3 previousLighting = _HistoryLightingTexture.SampleLevel(sampler_LinearClamp, uv, 0);
+    return float4(previousLighting, historyData.w);
+}
+
+float2 EvaluateCloudMotionVector(
+    uint2 outputCoord,
+    float cloudDepth)
+{
+    uint2 fullResolutionCoord = outputCoord * (uint)_OutputToFullResolutionScale;
+    float2 screenUv = (float2(fullResolutionCoord) + 0.5f) * _FullResolutionSize.zw;
+    float3 unnormalizedViewDirWs =
+        _CloudViewDirOriginWS.xyz
+        + _CloudViewDirStepXWS.xyz * fullResolutionCoord.x
+        + _CloudViewDirStepYWS.xyz * fullResolutionCoord.y;
+    float3 viewDirWs = unnormalizedViewDirWs
+        * rsqrt(dot(unnormalizedViewDirWs, unnormalizedViewDirWs));
+    float cloudViewDepth = min(
+        DecodeInfiniteVolumetricDepth(cloudDepth, _NearPlane),
+        200000.0f);
+    float rayLength = cloudViewDepth
+        * rcp(dot(viewDirWs, -UNITY_MATRIX_V[2].xyz));
+
+    float4 currentCloudWs = float4(
+        _WorldSpaceCameraPos.xyz + viewDirWs * rayLength,
+        1.0f);
+#if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+    currentCloudWs.xyz += _CloudHistoryPositionOffsetWS.xyz;
+#endif
+    float4 previousClip = mul(_PrevViewProjection, currentCloudWs);
+
+    float2 currentCS = screenUv * 2.0f - 1.0f;
+#if UNITY_UV_STARTS_AT_TOP
+    currentCS.y = -currentCS.y;
+#endif
+    float2 previousCS = previousClip.xy / previousClip.w;
+    float2 velocity = (currentCS - previousCS) * 0.5f;
+#if UNITY_UV_STARTS_AT_TOP
+    velocity.y = -velocity.y;
+#endif
+    return velocity;
+}
+
+float2 ComputeHistoryUv(uint2 outputCoord, float volumetricDepth, out bool insideHistory)
+{
+    float2 motionVector = EvaluateCloudMotionVector(outputCoord, volumetricDepth);
+    float2 historyUvUnscaled = (float2(outputCoord) + 0.5f) * _OutputSize.zw - motionVector;
+    float2 historyUvMax = 1.0f - 0.5f * _OutputSize.zw - 0.000001f;
+    insideHistory = all(0.0f <= float4(historyUvUnscaled, historyUvMax - historyUvUnscaled));
+    return historyUvUnscaled * _HistoryViewportScale.xy;
+}
+
+float LoadSceneDepthForReprojection(uint2 outputCoord)
+{
+    return LoadIntermediateSceneDepth(outputCoord);
+}
+
+void ReconstructTraceNeighborhoodNoMask(uint2 outputCoord, float sceneDepth, out float4 finalColor, out float finalVolumetricDepth)
+{
+    NeighborhoodUpsampleData3x3 upsampleData = (NeighborhoodUpsampleData3x3)0;
+    int subRegionIdx = (int)((outputCoord.x & 1u) + ((outputCoord.y & 1u) << 1u));
+    FillTraceUpscaleNeighborhoodData(outputCoord / 2u, subRegionIdx, upsampleData);
+    BilateralUpscale3x3(sceneDepth, upsampleData, finalColor, finalVolumetricDepth);
+    finalColor.a = saturate(finalColor.a);
+}
+
+void ReconstructTraceNeighborhood(uint2 outputCoord, float sceneDepth, out float4 finalColor, out float finalVolumetricDepth)
+{
+    NeighborhoodUpsampleData3x3 upsampleData = (NeighborhoodUpsampleData3x3)0;
+    int subRegionIdx = (int)((outputCoord.x & 1u) + ((outputCoord.y & 1u) << 1u));
+    FillTraceUpscaleNeighborhoodData(outputCoord / 2u, subRegionIdx, upsampleData);
+    ApplySkyNeighborhoodMask(upsampleData, IsFarDepth(sceneDepth));
+    BilateralUpscale3x3(sceneDepth, upsampleData, finalColor, finalVolumetricDepth);
+    finalColor.a = saturate(finalColor.a);
+}
+
+float4 ClipCloudsToRegion(float4 history, float4 minimum, float4 maximum, inout float validityFactor)
+{
+    float clampedTransmittance = clamp(history.w, minimum.w, maximum.w);
+    float3 center = 0.5f * (maximum.xyz + minimum.xyz);
+    float3 extents = 0.5f * (maximum.xyz - minimum.xyz);
+    float3 offset = history.xyz - center;
+    float3 absUnit = abs(offset / extents);
+    float maxUnit = max(absUnit.x, max(absUnit.y, absUnit.z));
+
+    validityFactor *= maxUnit > 1.0f ? 0.5f : 1.0f;
+    return maxUnit > 1.0f
+        ? float4(center + offset / maxUnit, clampedTransmittance)
+        : float4(history.xyz, clampedTransmittance);
+}
+
+void PrefetchTraceNeighborhoodLds(uint groupIndex, uint2 outputTileOrigin)
+{
+    uint2 ldsCoord = uint2(groupIndex % LDS_UPSCALE_WIDTH, groupIndex / LDS_UPSCALE_WIDTH);
+    int2 traceCoord = int2(outputTileOrigin / 2u) + int2(ldsCoord) - int2(1, 1);
+    int2 sourceMax = max(int2(_SourceSize.xy) - int2(1, 1), int2(0, 0));
+    traceCoord = clamp(traceCoord, int2(0, 0), sourceMax);
+
+    uint2 traceCoordU = uint2(traceCoord);
+    float2 traceData = _SourceDataTexture[traceCoordU].rg;
+    uint2 representativeCoord = traceCoordU * 2u
+        + ComputeCheckerBoardOffset(traceCoordU, (uint)_SubPixelIndex);
+    representativeCoord = min(representativeCoord, (uint2)_OutputSize.xy - 1u);
+
+    float3 lighting = _SourceLightingTexture[traceCoordU];
+    float sceneDepth = LoadIntermediateSceneDepth(representativeCoord);
+#if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+    bool sourceValid = traceData.x >= 0.0f;
+    gs_upscaleLighting[groupIndex] = sourceValid
+        ? float4(lighting, saturate(traceData.y))
+        : float4(0.0f, 0.0f, 0.0f, 1.0f);
+    gs_upscaleData[groupIndex] = float4(
+        sourceValid ? 1.0f : 0.0f,
+        sceneDepth,
+        sourceValid ? traceData.x : UNITY_RAW_FAR_CLIP_VALUE,
+        sourceValid ? saturate(traceData.y) : 1.0f);
+#else
+    gs_upscaleLighting[groupIndex] = float4(lighting, saturate(traceData.y));
+    gs_upscaleData[groupIndex] = float4(1.0f, sceneDepth, traceData.x, saturate(traceData.y));
+#endif
+}
+
+#if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+void BuildTraceNeighborhoodMinMaxLds(
+    uint2 groupThreadId,
+    float currentSceneDepth,
+    out float4 lightingMin,
+    out float4 lightingMax,
+    out bool hasValidSamples)
+{
+    lightingMin = float4(FLT_MAX, FLT_MAX, FLT_MAX, 1.0f);
+    lightingMax = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    hasValidSamples = false;
+
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; ++x)
+        {
+            uint address = UpscaleLdsAddress(groupThreadId, int2(x, y));
+            float4 data = gs_upscaleData[address];
+            if (data.x >= 0.5f &&
+                (data.y == UNITY_RAW_FAR_CLIP_VALUE) ==
+                (currentSceneDepth == UNITY_RAW_FAR_CLIP_VALUE))
+            {
+                float4 lighting = gs_upscaleLighting[address];
+                lightingMin = min(lightingMin, lighting);
+                lightingMax = max(lightingMax, lighting);
+                hasValidSamples = true;
+            }
+        }
+    }
+}
+#else
+void BuildTraceNeighborhoodMinMaxLds(
+    uint2 groupThreadId,
+    float currentSceneDepth,
+    out float4 lightingMin,
+    out float4 lightingMax)
+{
+    lightingMin = float4(FLT_MAX, FLT_MAX, FLT_MAX, 1.0f);
+    lightingMax = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; ++x)
+        {
+            uint address = UpscaleLdsAddress(groupThreadId, int2(x, y));
+            float4 data = gs_upscaleData[address];
+            if ((data.y == UNITY_RAW_FAR_CLIP_VALUE) ==
+                (currentSceneDepth == UNITY_RAW_FAR_CLIP_VALUE))
+            {
+                float4 lighting = gs_upscaleLighting[address];
+                lightingMin = min(lightingMin, lighting);
+                lightingMax = max(lightingMax, lighting);
+            }
+        }
+    }
+}
+#endif
+
+void LoadTracedSample(
+    uint2 outputCoord,
+    uint2 groupThreadId,
+    out bool validTracing,
+    out float4 tracedColor,
+    out float tracedVolumetricDepth)
+{
+    uint2 traceCoord = outputCoord / 2u;
+    uint2 localOffset = outputCoord & 1u;
+#if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+    bool checkerSample = all(
+        localOffset == ComputeCheckerBoardOffset(traceCoord, (uint)_SubPixelIndex));
+
+    #if defined(CLOUD_GHOST_REDUCTION)
+        uint address = UpscaleLdsAddress(groupThreadId, int2(0, 0));
+        bool sourceValid = gs_upscaleData[address].x >= 0.5f;
+        validTracing = checkerSample && sourceValid;
+        tracedColor = sourceValid
+            ? gs_upscaleLighting[address]
+            : float4(0.0f, 0.0f, 0.0f, 1.0f);
+        tracedVolumetricDepth = sourceValid ? gs_upscaleData[address].z : -1.0f;
+    #else
+        float3 tracedLighting = _SourceLightingTexture[traceCoord];
+        float2 traceData = _SourceDataTexture[traceCoord].rg;
+        bool sourceValid = traceData.x >= 0.0f;
+        validTracing = checkerSample && sourceValid;
+        tracedColor = sourceValid
+            ? float4(tracedLighting, saturate(traceData.y))
+            : float4(0.0f, 0.0f, 0.0f, 1.0f);
+        tracedVolumetricDepth = sourceValid ? traceData.x : -1.0f;
+    #endif
+#else
+    validTracing = all(localOffset == ComputeCheckerBoardOffset(traceCoord, (uint)_SubPixelIndex));
+
+    #if defined(CLOUD_GHOST_REDUCTION)
+        uint address = UpscaleLdsAddress(groupThreadId, int2(0, 0));
+        tracedColor = gs_upscaleLighting[address];
+        tracedVolumetricDepth = gs_upscaleData[address].z;
+    #else
+        float3 tracedLighting = _SourceLightingTexture[traceCoord];
+        float2 traceData = _SourceDataTexture[traceCoord].rg;
+        tracedColor = float4(tracedLighting, saturate(traceData.y));
+        tracedVolumetricDepth = traceData.x;
+    #endif
+#endif
+}
+
+void StoreResolvedOutput(
+    uint2 outputCoord,
+    float currentSceneDepth,
+    float4 finalColor,
+    float finalVolumetricDepth,
+    float finalSampleCount)
+{
+    finalColor.a = saturate(finalColor.a);
+    finalVolumetricDepth = finalColor.a == 1.0f
+        ? UNITY_RAW_FAR_CLIP_VALUE
+        : finalVolumetricDepth;
+
+    StoreOutputLighting(outputCoord, finalColor.rgb);
+    _OutputDataTexture[outputCoord] = float4(
+        finalSampleCount,
+        currentSceneDepth,
+        finalVolumetricDepth,
+        finalColor.a);
+}
+
+bool TryLoadHistory(
+    uint2 outputCoord,
+    float tracedVolumetricDepth,
+    float currentSceneDepth,
+    out float2 historyUv,
+    out float4 historyData)
+{
+#if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+    if (tracedVolumetricDepth < 0.0f)
+    {
+        float2 localHistoryUv =
+            (float2(outputCoord) + 0.5f) * _OutputSize.zw * _HistoryViewportScale.xy;
+        float4 localHistoryData =
+            _HistoryDataTexture.SampleLevel(sampler_LinearClamp, localHistoryUv, 0);
+        tracedVolumetricDepth = localHistoryData.x >= 0.5f
+            ? ReprojectPreviousCloudDepth(localHistoryData.z)
+            : UNITY_RAW_FAR_CLIP_VALUE;
+    }
+#endif
+
+    bool insideHistory = false;
+    historyUv = ComputeHistoryUv(outputCoord, tracedVolumetricDepth, insideHistory);
+    historyData = insideHistory
+        ? _HistoryDataTexture.SampleLevel(sampler_LinearClamp, historyUv, 0)
+        : 0.0f;
+    return insideHistory && historyData.x >= 0.5f &&
+        EvaluateRatioDepthDifference(historyData.y, currentSceneDepth);
+}
+
+void ResolveNoHistoryPixel(uint2 outputCoord)
+{
+    float currentSceneDepth = LoadSceneDepthForReprojection(outputCoord);
+    bool validTracing = false;
+    float4 finalColor = 0.0f;
+    float finalVolumetricDepth = UNITY_RAW_FAR_CLIP_VALUE;
+    LoadTracedSample(outputCoord, uint2(0u, 0u), validTracing, finalColor, finalVolumetricDepth);
+
+    if (!validTracing)
+    {
+        ReconstructTraceNeighborhoodNoMask(
+            outputCoord,
+            currentSceneDepth,
+            finalColor,
+            finalVolumetricDepth);
+    }
+
+    StoreResolvedOutput(
+        outputCoord,
+        currentSceneDepth,
+        finalColor,
+        finalVolumetricDepth,
+        1.0f);
+}
+
+void ResolveHistoryPixel(uint2 outputCoord, uint2 groupThreadId)
+{
+    float currentSceneDepth = LoadSceneDepthForReprojection(outputCoord);
+    bool validTracing = false;
+    float4 tracedColor = 0.0f;
+    float tracedVolumetricDepth = UNITY_RAW_FAR_CLIP_VALUE;
+    LoadTracedSample(outputCoord, groupThreadId, validTracing, tracedColor, tracedVolumetricDepth);
+
+    float4 finalColor = tracedColor;
+    float finalVolumetricDepth = tracedVolumetricDepth;
+    float finalSampleCount = 1.0f;
+
+    float2 historyUv = 0.0f;
+    float4 historyData = 0.0f;
+    bool validHistory = TryLoadHistory(
+        outputCoord,
+        tracedVolumetricDepth,
+        currentSceneDepth,
+        historyUv,
+        historyData);
+
+    if (validHistory)
+    {
+        float previousSampleCount = historyData.x;
+        float validityFactor = 1.0f;
+        float4 previousColor = LoadHistoryLighting(historyUv, historyData);
+
+    #if defined(CLOUD_GHOST_REDUCTION)
+        float4 lightingMin = 0.0f;
+        float4 lightingMax = 0.0f;
+        #if defined(CLOUDS_SPARSE_FULL_RESOLUTION)
+            bool hasValidTraceNeighborhood = false;
+            BuildTraceNeighborhoodMinMaxLds(
+                groupThreadId,
+                currentSceneDepth,
+                lightingMin,
+                lightingMax,
+                hasValidTraceNeighborhood);
+            if (hasValidTraceNeighborhood)
+            {
+                previousColor = ClipCloudsToRegion(
+                    previousColor,
+                    lightingMin,
+                    lightingMax,
+                    validityFactor);
+            }
+        #else
+            BuildTraceNeighborhoodMinMaxLds(
+                groupThreadId,
+                currentSceneDepth,
+                lightingMin,
+                lightingMax);
+            previousColor = ClipCloudsToRegion(
+                previousColor,
+                lightingMin,
+                lightingMax,
+                validityFactor);
+        #endif
+    #endif
+
+        if (validTracing)
+        {
+            float accumulationFactor =
+                validityFactor * previousSampleCount / (previousSampleCount + 1.0f);
+            accumulationFactor *= _TemporalAccumulationFactor * _HistoryInvalidation;
+            finalColor = lerp(tracedColor, previousColor, accumulationFactor);
+            finalSampleCount = min(previousSampleCount + 1.0f, 16.0f);
+        }
+        else
+        {
+            finalColor = previousColor;
+            finalVolumetricDepth = ReprojectPreviousCloudDepth(historyData.z);
+            finalSampleCount = max(
+                1.0f,
+                validityFactor * previousSampleCount * _HistoryInvalidation);
+        }
+    }
+    else if (!validTracing)
+    {
+        ReconstructTraceNeighborhood(
+            outputCoord,
+            currentSceneDepth,
+            finalColor,
+            finalVolumetricDepth);
+    }
+
+    StoreResolvedOutput(
+        outputCoord,
+        currentSceneDepth,
+        finalColor,
+        finalVolumetricDepth,
+        finalSampleCount);
+}
+
+[numthreads(VOLUMETRIC_THREAD_GROUP_SIZE, VOLUMETRIC_THREAD_GROUP_SIZE, 1)]
+void RESOLVE_HISTORY_KERNEL(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uint3 groupId : SV_GroupID,
+    uint3 groupThreadId : SV_GroupThreadID,
+    uint groupIndex : SV_GroupIndex)
+{
+#if defined(CLOUD_GHOST_REDUCTION)
+    if (groupIndex < 36u)
+        PrefetchTraceNeighborhoodLds(
+            groupIndex,
+            groupId.xy * VOLUMETRIC_THREAD_GROUP_SIZE);
+
+    GroupMemoryBarrierWithGroupSync();
+#endif
+
+    uint2 outputCoord = dispatchThreadId.xy;
+    if (any(outputCoord >= (uint2)_OutputSize.xy))
+        return;
+
+    ResolveHistoryPixel(outputCoord, groupThreadId.xy);
+}
+
+[numthreads(VOLUMETRIC_THREAD_GROUP_SIZE, VOLUMETRIC_THREAD_GROUP_SIZE, 1)]
+void ResolveNoHistory(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 outputCoord = dispatchThreadId.xy;
+    if (any(outputCoord >= (uint2)_OutputSize.xy))
+        return;
+
+    ResolveNoHistoryPixel(outputCoord);
+}

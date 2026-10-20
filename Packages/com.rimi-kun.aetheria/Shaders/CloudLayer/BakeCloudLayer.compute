@@ -1,0 +1,322 @@
+#pragma kernel BakeBaseSingle CLOUD_LAYER_COUNT=1
+#pragma kernel BakeBaseDouble CLOUD_LAYER_COUNT=2
+#pragma kernel BakeLightingSingle CLOUD_LAYER_COUNT=1
+#pragma kernel BakeLightingDouble CLOUD_LAYER_COUNT=2
+#pragma kernel CombineSingle CLOUD_LAYER_COUNT=1
+#pragma kernel CombineDouble CLOUD_LAYER_COUNT=2
+#pragma target 4.5
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "../../ShaderLibrary/CloudLayer/CloudLayerUtilities.hlsl"
+#include "../../Runtime/Data/ShaderConfigs/CloudShaderConfig.cs.hlsl"
+
+#define CLOUD_LAYER_MULTI_SCATTERING_OCTAVES 2
+#define CLOUD_LAYER_FORWARD_LOBE_ECCENTRICITY 0.7f
+#define CLOUD_LAYER_BACKWARD_LOBE_ECCENTRICITY 0.3f
+#define CLOUD_LAYER_MULTI_SCATTERING 0.75f
+#define CLOUD_LAYER_THICKNESS_METERS 800.0f
+
+TEXTURE2D(_CloudMapA);
+SAMPLER(sampler_CloudMapA);
+
+#if CLOUD_LAYER_COUNT == 2
+TEXTURE2D(_CloudMapB);
+SAMPLER(sampler_CloudMapB);
+#endif
+
+TEXTURE2D_ARRAY(_CloudLayerBaseTexture);
+SAMPLER(sampler_CloudLayerBaseTexture);
+TEXTURE2D_ARRAY(_CloudLayerLightingTexture);
+SAMPLER(sampler_CloudLayerLightingTexture);
+
+RWTexture2DArray<float2> _CloudLayerBaseTextureRW;
+RWTexture2DArray<float2> _CloudLayerLightingTextureRW;
+RWTexture2DArray<float2> _CloudLayerTexture;
+
+float4 _CloudLayerBakeParams;
+float4 _CloudLayerLayerOpacities[2];
+float4 _CloudLayerLayerBakeParams[2];
+float4 _CloudLayerBaseSize;
+float4 _CloudLayerLightingSize;
+int _CloudLayerLightingRowOffset;
+int _CloudLayerLightingRowCount;
+
+#define CLOUD_LAYER_SUN_DIRECTION _CloudLayerBakeParams.xyz
+#define CLOUD_LAYER_UPPER_HEMISPHERE (_CloudLayerBakeParams.w > 0.0f)
+#define CLOUD_LAYER_PLANET_RADIUS abs(_CloudLayerBakeParams.w)
+
+struct CloudLayerBakeData
+{
+    uint index;
+    float4 weights;
+    float3 sunDirection;
+};
+
+CloudLayerBakeData BuildLayerData(uint layerIndex)
+{
+    CloudLayerBakeData data = (CloudLayerBakeData)0;
+    data.index = layerIndex;
+    float4 opacities = _CloudLayerLayerOpacities[layerIndex];
+    data.weights = opacities /
+        max(opacities.r + opacities.g + opacities.b + opacities.a, 1.0f);
+    data.sunDirection = CLOUD_LAYER_SUN_DIRECTION;
+    return data;
+}
+
+float GetCloudLayerLowestRadius(CloudLayerBakeData data)
+{
+    return CLOUD_LAYER_PLANET_RADIUS + _CloudLayerLayerBakeParams[data.index].w;
+}
+
+float GetCloudLayerHighestRadius(CloudLayerBakeData data)
+{
+    return GetCloudLayerLowestRadius(data) + CLOUD_LAYER_THICKNESS_METERS;
+}
+
+void GetCloudLayerVolumeIntersection(
+    CloudLayerBakeData data,
+    float3 direction,
+    out float rangeStart,
+    out float range)
+{
+    rangeStart = 0.0f;
+    float rangeEnd = 0.0f;
+    IntersectSphericalShellVolume(
+        float3(0.0f, CLOUD_LAYER_PLANET_RADIUS, 0.0f),
+        direction,
+        GetCloudLayerLowestRadius(data),
+        GetCloudLayerHighestRadius(data),
+        CLOUD_LAYER_PLANET_RADIUS,
+        rangeStart,
+        rangeEnd);
+    range = rangeEnd - rangeStart;
+}
+
+float SampleSourceCloudMap(CloudLayerBakeData data, float2 uv)
+{
+    float4 cloudMap = 0.0f;
+
+#if CLOUD_LAYER_COUNT == 1
+    cloudMap = SAMPLE_TEXTURE2D_LOD(_CloudMapA, sampler_CloudMapA, uv, 0);
+#else
+    cloudMap = data.index == 0u
+        ? SAMPLE_TEXTURE2D_LOD(_CloudMapA, sampler_CloudMapA, uv, 0)
+        : SAMPLE_TEXTURE2D_LOD(_CloudMapB, sampler_CloudMapB, uv, 0);
+#endif
+
+    return dot(cloudMap, data.weights);
+}
+
+float2 PhysicalCloudUv(uint2 coord, float4 size)
+{
+    float2 uv = float2(coord) * size.zz;
+    uv.y = CLOUD_LAYER_UPPER_HEMISPHERE ? uv.y * 2.0f : uv.y;
+    return uv;
+}
+
+float GetCloudLayerDensity(
+    CloudLayerBakeData data,
+    float3 positionWS,
+    float3 direction,
+    float thickness)
+{
+    float rangeStart = 0.0f;
+    float range = 0.0f;
+    GetCloudLayerVolumeIntersection(data, direction, rangeStart, range);
+
+    float distanceToCenter = length(direction * (rangeStart + 0.5f * range) - positionWS);
+    return distanceToCenter > range * thickness ? 0.0f : 0.1f * thickness;
+}
+
+float GetCloudLayerDensityFromSource(CloudLayerBakeData data, float3 positionWS)
+{
+    float3 direction = normalize(positionWS);
+    float2 sourceUv = GetCloudLayerLatLongCoords(
+        direction,
+        CLOUD_LAYER_UPPER_HEMISPHERE);
+    sourceUv.x -= _CloudLayerLayerBakeParams[data.index].x;
+    float thickness = SampleSourceCloudMap(data, sourceUv);
+    return GetCloudLayerDensity(data, positionWS, direction, thickness);
+}
+
+float EvaluateCloudLayerSunLuminance(
+    CloudLayerBakeData data,
+    float3 positionWS,
+    float phaseFunctions[CLOUD_LAYER_MULTI_SCATTERING_OCTAVES])
+{
+    int lightStepCount = (int)_CloudLayerLayerBakeParams[data.index].y;
+    float totalLightDistance = 0.0f;
+    float3 positionPS = positionWS + float3(0.0f, CLOUD_LAYER_PLANET_RADIUS, 0.0f);
+    float radialProjection = dot(positionPS, data.sunDirection);
+    float radialDistanceSquared = dot(positionPS, positionPS);
+    ExitSphericalShellVolume(
+        radialProjection,
+        radialDistanceSquared,
+        CLOUD_LAYER_PLANET_RADIUS,
+        GetCloudLayerHighestRadius(data),
+        totalLightDistance);
+    totalLightDistance = clamp(totalLightDistance, 0.0f, 500.0f);
+
+    float stepSize = totalLightDistance / max((float)lightStepCount, 1.0f);
+    float extinction = 0.0f;
+
+    for (int step = 1; step <= lightStepCount; ++step)
+    {
+        float3 samplePosition = positionWS + data.sunDirection * stepSize * step;
+        extinction += GetCloudLayerDensityFromSource(data, samplePosition);
+    }
+
+    float sigmaT = _CloudLayerLayerBakeParams[data.index].z;
+    float luminance = 0.0f;
+
+    for (int octave = 0; octave < CLOUD_LAYER_MULTI_SCATTERING_OCTAVES; ++octave)
+    {
+        float scatteringFactor = pow(CLOUD_LAYER_MULTI_SCATTERING, octave);
+        luminance += TransmittanceFromOpticalDepth(stepSize * extinction * sigmaT * scatteringFactor) *
+                     phaseFunctions[octave] * scatteringFactor;
+    }
+
+    return luminance;
+}
+
+float2 ComputeCloudLayerBase(float2 physicalUv, uint layerIndex)
+{
+    CloudLayerBakeData data = BuildLayerData(layerIndex);
+    float2 sourceUv = physicalUv;
+    sourceUv.x -= _CloudLayerLayerBakeParams[layerIndex].x;
+    float sourceOpacity = SampleSourceCloudMap(data, sourceUv);
+    float alpha = sourceOpacity;
+
+    int lightStepCount = (int)_CloudLayerLayerBakeParams[layerIndex].y;
+    if (lightStepCount != 0 && sourceOpacity != 0.0f)
+    {
+        float3 direction = InverseCloudLayerLatLong(physicalUv, CLOUD_LAYER_UPPER_HEMISPHERE);
+        float rangeStart = 0.0f;
+        float range = 0.0f;
+        GetCloudLayerVolumeIntersection(data, direction, rangeStart, range);
+        float sigmaT = _CloudLayerLayerBakeParams[layerIndex].z;
+        float sigmaE = 0.1f * sourceOpacity * sigmaT;
+        float stepTransmittance = TransmittanceFromOpticalDepth(sigmaE * range * sourceOpacity);
+        alpha = 1.0f - stepTransmittance;
+    }
+
+    return float2(sourceOpacity, alpha);
+}
+
+float2 ComputeCloudLayerLighting(float2 physicalUv, uint layerIndex)
+{
+    CloudLayerBakeData data = BuildLayerData(layerIndex);
+    float2 baseCloud = SAMPLE_TEXTURE2D_ARRAY_LOD(
+        _CloudLayerBaseTexture,
+        sampler_CloudLayerBaseTexture,
+        physicalUv,
+        layerIndex,
+        0).rg;
+    float sourceOpacity = baseCloud.x;
+    float alpha = baseCloud.y;
+    int lightStepCount = (int)_CloudLayerLayerBakeParams[layerIndex].y;
+
+    float2 lighting = 0.0f;
+    if (lightStepCount == 0)
+    {
+        lighting = float2(alpha, alpha);
+    }
+    else if (sourceOpacity != 0.0f)
+    {
+        float3 direction = InverseCloudLayerLatLong(physicalUv, CLOUD_LAYER_UPPER_HEMISPHERE);
+        float cosAngle = dot(direction, data.sunDirection);
+        float phaseFunctions[CLOUD_LAYER_MULTI_SCATTERING_OCTAVES];
+
+        phaseFunctions[0] = ApproximateMiePhase(
+            CLOUDSHADERCONFIG_DROPLET_DIAMETER_MICROMETERS,
+            cosAngle);
+
+        [unroll]
+        for (int octave = 1; octave < CLOUD_LAYER_MULTI_SCATTERING_OCTAVES; ++octave)
+        {
+            float scatteringFactor = pow(CLOUD_LAYER_MULTI_SCATTERING, octave);
+            float forwardLobe = HenyeyGreensteinPhaseFunction(
+                CLOUD_LAYER_FORWARD_LOBE_ECCENTRICITY * scatteringFactor,
+                cosAngle);
+            float backwardLobe = HenyeyGreensteinPhaseFunction(
+                -CLOUD_LAYER_BACKWARD_LOBE_ECCENTRICITY * scatteringFactor,
+                cosAngle);
+            phaseFunctions[octave] = forwardLobe + backwardLobe;
+        }
+
+        float rangeStart = 0.0f;
+        float range = 0.0f;
+        GetCloudLayerVolumeIntersection(data, direction, rangeStart, range);
+        float3 currentPosition =
+            direction * (rangeStart + 0.5f * (1.0f - sourceOpacity) * range);
+        float luminance = EvaluateCloudLayerSunLuminance(data, currentPosition, phaseFunctions);
+        lighting = float2(luminance * alpha, alpha);
+    }
+    return lighting;
+}
+
+void BakeBase(uint3 dispatchThreadId)
+{
+    uint layerIndex = dispatchThreadId.z;
+    if (layerIndex >= CLOUD_LAYER_COUNT ||
+        dispatchThreadId.x >= (uint)_CloudLayerBaseSize.x ||
+        dispatchThreadId.y >= (uint)_CloudLayerBaseSize.y)
+        return;
+
+    float2 physicalUv = PhysicalCloudUv(dispatchThreadId.xy, _CloudLayerBaseSize);
+    _CloudLayerBaseTextureRW[dispatchThreadId] = ComputeCloudLayerBase(physicalUv, layerIndex);
+}
+
+void BakeLighting(uint3 dispatchThreadId)
+{
+    uint layerIndex = dispatchThreadId.z;
+    uint2 coord = uint2(dispatchThreadId.x, dispatchThreadId.y + (uint)_CloudLayerLightingRowOffset);
+    if (layerIndex >= CLOUD_LAYER_COUNT ||
+        dispatchThreadId.y >= (uint)_CloudLayerLightingRowCount ||
+        coord.x >= (uint)_CloudLayerLightingSize.x ||
+        coord.y >= (uint)_CloudLayerLightingSize.y)
+        return;
+
+    float2 physicalUv = PhysicalCloudUv(coord, _CloudLayerLightingSize);
+    _CloudLayerLightingTextureRW[uint3(coord, layerIndex)] =
+        ComputeCloudLayerLighting(physicalUv, layerIndex);
+}
+
+void CombineCloudLayer(uint3 dispatchThreadId)
+{
+    uint layerIndex = dispatchThreadId.z;
+    if (layerIndex >= CLOUD_LAYER_COUNT ||
+        dispatchThreadId.x >= (uint)_CloudLayerBaseSize.x ||
+        dispatchThreadId.y >= (uint)_CloudLayerBaseSize.y)
+        return;
+
+    float2 physicalUv = PhysicalCloudUv(dispatchThreadId.xy, _CloudLayerBaseSize);
+    float2 baseCloud = _CloudLayerBaseTexture.Load(int4(dispatchThreadId.xy, layerIndex, 0)).rg;
+    float2 filteredLighting = SAMPLE_TEXTURE2D_ARRAY_LOD(
+        _CloudLayerLightingTexture,
+        sampler_CloudLayerLightingTexture,
+        physicalUv,
+        layerIndex,
+        0).rg;
+    float luminance = filteredLighting.x / max(filteredLighting.y, 1.0e-5f);
+    float lighting = luminance * baseCloud.y;
+    _CloudLayerTexture[dispatchThreadId] = float2(lighting, baseCloud.y);
+}
+
+[numthreads(8, 8, CLOUD_LAYER_COUNT)]
+void BakeBaseSingle(uint3 dispatchThreadId : SV_DispatchThreadID) { BakeBase(dispatchThreadId); }
+
+[numthreads(8, 8, CLOUD_LAYER_COUNT)]
+void BakeBaseDouble(uint3 dispatchThreadId : SV_DispatchThreadID) { BakeBase(dispatchThreadId); }
+
+[numthreads(8, 8, CLOUD_LAYER_COUNT)]
+void BakeLightingSingle(uint3 dispatchThreadId : SV_DispatchThreadID) { BakeLighting(dispatchThreadId); }
+
+[numthreads(8, 8, CLOUD_LAYER_COUNT)]
+void BakeLightingDouble(uint3 dispatchThreadId : SV_DispatchThreadID) { BakeLighting(dispatchThreadId); }
+
+[numthreads(8, 8, CLOUD_LAYER_COUNT)]
+void CombineSingle(uint3 dispatchThreadId : SV_DispatchThreadID) { CombineCloudLayer(dispatchThreadId); }
+
+[numthreads(8, 8, CLOUD_LAYER_COUNT)]
+void CombineDouble(uint3 dispatchThreadId : SV_DispatchThreadID) { CombineCloudLayer(dispatchThreadId); }

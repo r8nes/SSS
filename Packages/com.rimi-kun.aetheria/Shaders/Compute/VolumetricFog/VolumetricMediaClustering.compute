@@ -1,0 +1,203 @@
+#pragma kernel ClearVolumetricMediaClusters
+#pragma kernel BinVolumetricMedia
+#pragma kernel ClassifyVolumetricMediaColumns
+#pragma target 5.0
+
+#include "../../../Runtime/Data/ShaderConfigs/VolumetricShaderConfig.cs.hlsl"
+#include "../../../ShaderLibrary/Fog/Volumetrics/VolumetricFroxel.hlsl"
+
+#define MEDIA_TILE_STRIDE_BYTES 24u
+#define MEDIA_TILE_TEXTURED_OFFSET 16u
+#define MEDIA_TILE_COUNT_OFFSET 20u
+#define MEDIA_DISPATCH_CATEGORY_COUNT 3u
+
+struct VolumetricMediaBounds
+{
+    float4 centerAndTextured;
+    float4 axisX;
+    float4 axisY;
+    float4 axisZ;
+};
+
+StructuredBuffer<VolumetricMediaBounds> _VolumetricMediaBoundsBuffer;
+RWByteAddressBuffer _VolumetricMediaTileBuffer;
+RWStructuredBuffer<uint> _VolumetricMediaDispatchTileBuffer;
+RWStructuredBuffer<uint> _VolumetricMediaIndirectArgs;
+
+float4 _VolumetricMediaTileGridParams;
+uint _VolumetricMediaCount;
+uint _VolumetricMediaCategory;
+
+uint GetTileAddress(uint3 tileCoord)
+{
+    uint tileIndex = tileCoord.x +
+        tileCoord.y * (uint)_VolumetricMediaTileGridParams.x +
+        tileCoord.z * (uint)_VolumetricMediaTileGridParams.w;
+    return tileIndex * MEDIA_TILE_STRIDE_BYTES;
+}
+
+bool IntersectsMediaBoundsPlane(VolumetricMediaBounds bounds, float4 clipPlane)
+{
+    float4 plane = mul(clipPlane, UNITY_MATRIX_VP);
+    float radius =
+        abs(dot(plane.xyz, bounds.axisX.xyz)) +
+        abs(dot(plane.xyz, bounds.axisY.xyz)) +
+        abs(dot(plane.xyz, bounds.axisZ.xyz));
+    return dot(plane.xyz, bounds.centerAndTextured.xyz) + plane.w + radius >= 0.0;
+}
+
+bool IntersectsTileSidePlanes(VolumetricMediaBounds bounds, uint2 tileCoord)
+{
+    float2 froxelSize = max(_VolumetricGridParams.xy, 1.0);
+    float2 uvMin = tileCoord * VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_XY / froxelSize;
+    float2 uvMax = min(
+        (tileCoord + 1u) * VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_XY / froxelSize,
+        1.0);
+    float2 clipA = ComputeClipSpacePosition(uvMin, 0.0).xy;
+    float2 clipB = ComputeClipSpacePosition(uvMax, 0.0).xy;
+    float2 clipMin = min(clipA, clipB);
+    float2 clipMax = max(clipA, clipB);
+
+    bool intersects = true;
+    intersects = intersects && IntersectsMediaBoundsPlane(
+        bounds, float4(1.0, 0.0, 0.0, -clipMin.x));
+    intersects = intersects && IntersectsMediaBoundsPlane(
+        bounds, float4(-1.0, 0.0, 0.0, clipMax.x));
+    intersects = intersects && IntersectsMediaBoundsPlane(
+        bounds, float4(0.0, 1.0, 0.0, -clipMin.y));
+    intersects = intersects && IntersectsMediaBoundsPlane(
+        bounds, float4(0.0, -1.0, 0.0, clipMax.y));
+    return intersects;
+}
+
+void ComputeTileZRange(VolumetricMediaBounds bounds, out uint firstTileZ, out uint lastTileZ)
+{
+    float3 cameraToCenter = bounds.centerAndTextured.xyz - _VolumetricCameraParams.xyz;
+    float3 closestOffset = cameraToCenter;
+    float maxDistanceSq = 0.0;
+
+    float3 axes[3] =
+    {
+        bounds.axisX.xyz,
+        bounds.axisY.xyz,
+        bounds.axisZ.xyz
+    };
+    [unroll]
+    for (uint axisIndex = 0u; axisIndex < 3u; ++axisIndex)
+    {
+        float3 axis = axes[axisIndex];
+        float halfExtent = length(axis);
+        float3 direction = axis * rcp(max(halfExtent, 1.0e-6));
+        float projected = dot(cameraToCenter, direction);
+        closestOffset -= direction * clamp(projected, -halfExtent, halfExtent);
+    }
+
+    [unroll]
+    for (uint cornerIndex = 0u; cornerIndex < 8u; ++cornerIndex)
+    {
+        float3 cornerOffset = cameraToCenter +
+            ((cornerIndex & 1u) != 0u ? axes[0] : -axes[0]) +
+            ((cornerIndex & 2u) != 0u ? axes[1] : -axes[1]) +
+            ((cornerIndex & 4u) != 0u ? axes[2] : -axes[2]);
+        maxDistanceSq = max(maxDistanceSq, dot(cornerOffset, cornerOffset));
+    }
+
+    float minDistance = max(length(closestOffset), _VolumetricDepthParams.x);
+    float maxDistance = min(sqrt(maxDistanceSq), _VolumetricLastSliceDistance);
+    float sliceCount = _VolumetricGridParams.z;
+    int firstSlice = (int)floor(
+        EncodeLogarithmicDepthGeneralized(minDistance, _VolumetricDepthEncodingParams) *
+        sliceCount) - 1;
+    int lastSliceExclusive = (int)ceil(
+        EncodeLogarithmicDepthGeneralized(maxDistance, _VolumetricDepthEncodingParams) *
+        sliceCount) + 1;
+    firstSlice = clamp(firstSlice, 0, (int)sliceCount - 1);
+    lastSliceExclusive = clamp(lastSliceExclusive, 0, (int)sliceCount);
+    firstTileZ = (uint)firstSlice / VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_Z;
+    lastTileZ = (uint)max(lastSliceExclusive - 1, firstSlice) /
+        VOLUMETRICSHADERCONFIG_MEDIA_TILE_SIZE_Z;
+}
+
+[numthreads(64, 1, 1)]
+void ClearVolumetricMediaClusters(uint3 id : SV_DispatchThreadID)
+{
+    uint tileCount = (uint)_VolumetricMediaTileGridParams.w *
+        (uint)_VolumetricMediaTileGridParams.z;
+    if (id.x < tileCount)
+    {
+        uint address = id.x * MEDIA_TILE_STRIDE_BYTES;
+        _VolumetricMediaTileBuffer.Store4(address, uint4(0u, 0u, 0u, 0u));
+        _VolumetricMediaTileBuffer.Store2(address + 16u, uint2(0u, 0u));
+    }
+
+    if (id.x < MEDIA_DISPATCH_CATEGORY_COUNT * 3u)
+        _VolumetricMediaIndirectArgs[id.x] = id.x % 3u == 0u ? 0u : 1u;
+}
+
+[numthreads(8, 8, 1)]
+void BinVolumetricMedia(uint3 id : SV_DispatchThreadID)
+{
+    uint2 tileCountXY = (uint2)_VolumetricMediaTileGridParams.xy;
+    if (any(id.xy >= tileCountXY) || id.z >= _VolumetricMediaCount)
+        return;
+
+    VolumetricMediaBounds bounds = _VolumetricMediaBoundsBuffer[id.z];
+    if (!IntersectsTileSidePlanes(bounds, id.xy))
+        return;
+
+    uint firstTileZ = 0u;
+    uint lastTileZ = 0u;
+    ComputeTileZRange(bounds, firstTileZ, lastTileZ);
+    uint categoryOffset = _VolumetricMediaCategory * 8u;
+    uint wordOffset = id.z >= 32u ? 4u : 0u;
+    uint bit = 1u << (id.z & 31u);
+
+    for (uint tileZ = firstTileZ; tileZ <= lastTileZ; ++tileZ)
+    {
+        uint address = GetTileAddress(uint3(id.xy, tileZ));
+        uint previousCount = 0u;
+        _VolumetricMediaTileBuffer.InterlockedAdd(
+            address + MEDIA_TILE_COUNT_OFFSET, 1u, previousCount);
+        if (previousCount >= VOLUMETRICSHADERCONFIG_MAX_MEDIA_PER_TILE)
+        {
+            uint ignored = 0u;
+            _VolumetricMediaTileBuffer.InterlockedAdd(
+                address + MEDIA_TILE_COUNT_OFFSET, 0xffffffffu, ignored);
+            continue;
+        }
+
+        uint ignored = 0u;
+        _VolumetricMediaTileBuffer.InterlockedOr(
+            address + categoryOffset + wordOffset, bit, ignored);
+        if (bounds.centerAndTextured.w > 0.5)
+        {
+            _VolumetricMediaTileBuffer.InterlockedOr(
+                address + MEDIA_TILE_TEXTURED_OFFSET, 1u, ignored);
+        }
+    }
+}
+
+[numthreads(64, 1, 1)]
+void ClassifyVolumetricMediaColumns(uint3 id : SV_DispatchThreadID)
+{
+    uint tileCountXY = (uint)_VolumetricMediaTileGridParams.w;
+    if (id.x >= tileCountXY)
+        return;
+
+    uint tileCountZ = (uint)_VolumetricMediaTileGridParams.z;
+    bool active = false;
+    bool textured = false;
+    for (uint tileZ = 0u; tileZ < tileCountZ; ++tileZ)
+    {
+        uint address = (id.x + tileZ * tileCountXY) * MEDIA_TILE_STRIDE_BYTES;
+        active = active ||
+            _VolumetricMediaTileBuffer.Load(address + MEDIA_TILE_COUNT_OFFSET) != 0u;
+        textured = textured ||
+            _VolumetricMediaTileBuffer.Load(address + MEDIA_TILE_TEXTURED_OFFSET) != 0u;
+    }
+
+    uint category = active ? (textured ? 2u : 1u) : 0u;
+    uint listIndex = 0u;
+    InterlockedAdd(_VolumetricMediaIndirectArgs[category * 3u], 1u, listIndex);
+    _VolumetricMediaDispatchTileBuffer[category * tileCountXY + listIndex] = id.x;
+}

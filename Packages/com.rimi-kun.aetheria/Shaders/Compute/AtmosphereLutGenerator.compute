@@ -1,0 +1,41 @@
+#pragma kernel TransmittanceLut ATMOSPHERE_TRANSMITTANCE_KERNEL ATMOSPHERE_PRECOMPUTE_ONLY=1
+#pragma kernel SkyViewLut BUILDING_SKY_VIEW_LUT
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "../../ShaderLibrary/Atmosphere/AtmosphereScattering.hlsl"
+
+RWTexture2D<float4> ATMOSPHERE_OUTPUT_TEXTURE;
+
+#if defined(ATMOSPHERE_TRANSMITTANCE_KERNEL)
+[numthreads(ATMOSPHERESHADERCONFIG_LUT_THREAD_GROUP_SIZE,
+            ATMOSPHERESHADERCONFIG_LUT_THREAD_GROUP_SIZE,
+            1)]
+void TransmittanceLut(uint2 coord : SV_DispatchThreadID)
+{
+    if (coord.x >= ATMOSPHERESHADERCONFIG_TRANSMITTANCE_LUT_WIDTH ||
+        coord.y >= ATMOSPHERESHADERCONFIG_TRANSMITTANCE_LUT_HEIGHT)
+        return;
+
+    float2 uv = (float2(coord) + 0.5f) /
+                float2(ATMOSPHERESHADERCONFIG_TRANSMITTANCE_LUT_WIDTH,
+                       ATMOSPHERESHADERCONFIG_TRANSMITTANCE_LUT_HEIGHT);
+    ATMOSPHERE_OUTPUT_TEXTURE[coord] = float4(RenderTransmittanceLut(uv), 1.0f);
+}
+#endif
+
+#if defined(BUILDING_SKY_VIEW_LUT)
+[numthreads(ATMOSPHERESHADERCONFIG_LUT_THREAD_GROUP_SIZE,
+            ATMOSPHERESHADERCONFIG_LUT_THREAD_GROUP_SIZE,
+            1)]
+void SkyViewLut(uint2 coord : SV_DispatchThreadID)
+{
+    if (coord.x >= ATMOSPHERESHADERCONFIG_SKY_VIEW_LUT_WIDTH ||
+        coord.y >= ATMOSPHERESHADERCONFIG_SKY_VIEW_LUT_HEIGHT)
+        return;
+
+    float2 uv = (float2(coord) + 0.5f) /
+                float2(ATMOSPHERESHADERCONFIG_SKY_VIEW_LUT_WIDTH,
+                       ATMOSPHERESHADERCONFIG_SKY_VIEW_LUT_HEIGHT);
+    ATMOSPHERE_OUTPUT_TEXTURE[coord] = float4(RenderSkyViewLut(uv), 1.0f);
+}
+#endif

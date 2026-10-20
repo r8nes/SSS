@@ -1,0 +1,67 @@
+#pragma kernel TraceFullSphere TRACE_KERNEL=TraceFullSphere CLOUDS_SIMPLE_PRESET
+#pragma kernel TraceFullSphereMicroErosion TRACE_KERNEL=TraceFullSphereMicroErosion CLOUDS_MICRO_EROSION CLOUDS_SIMPLE_PRESET
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "../../Runtime/Data/ShaderConfigs/AtmosphereShaderConfig.cs.hlsl"
+#include "../../ShaderLibrary/Common/EnvironmentCubemap.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/GeometricTools.hlsl"
+
+Texture2D _CloudLutTexture;
+Texture3D _CloudShapeNoise;
+Texture3D _CloudDetailNoise;
+
+
+#define ENVIRONMENT_TRACE_GROUP_SIZE 8
+#include "../../ShaderLibrary/Clouds/VolumetricClouds.hlsl"
+
+RWTexture2DArray<float4> _CloudTraceOutput;
+RWTexture2DArray<float> _CloudTraceDepthOutput;
+
+float3 _OriginWs;
+int _CloudResolution;
+
+[numthreads(ENVIRONMENT_TRACE_GROUP_SIZE, ENVIRONMENT_TRACE_GROUP_SIZE, 1)]
+void TRACE_KERNEL(uint3 dispatchCoord : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
+{
+    LoadCloudLutToLDS(groupIndex);
+    uint size = (uint)_CloudResolution;
+    uint3 coord = dispatchCoord;
+    if (any(coord.xy >= size) || coord.z >= 6u)
+        return;
+    float3 direction = CubeFaceTexelDirection(coord.z, coord.xy, size);
+    CloudRay ray = (CloudRay)0;
+    ray.originWS = _OriginWs;
+    ray.direction = direction;
+    ray.maxRayLength = MAX_SKYBOX_VOLUMETRIC_CLOUDS_DISTANCE;
+    ray.integrationNoise = 0.0f;
+
+    float3 originPS = ConvertToPS(ray.originWS);
+    if (dot(originPS, direction) < 0.0f)
+    {
+        float2 groundIntersections = 0.0f;
+        bool hitGround = IntersectRaySphere(originPS, direction, _CloudPlanetRadius, groundIntersections);
+        float groundDistance = hitGround && groundIntersections.y >= 0.0f
+            ? (groundIntersections.x >= 0.0f ? groundIntersections.x : groundIntersections.y)
+            : -1.0f;
+        if (groundDistance >= 0.0f)
+            ray.maxRayLength = groundDistance;
+    }
+
+    VolumetricRayResult rayResult = (VolumetricRayResult)0;
+    rayResult.transmittance = 1.0f;
+    rayResult.invalidRay = true;
+    TraceVolumetricRay(ray, rayResult);
+
+    float4 result = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    float weightedMeanDistance = 0.0f;
+    if (!rayResult.invalidRay)
+    {
+        float transmittance = saturate(rayResult.transmittance);
+        float opacity = 1.0f - transmittance;
+        result = float4(max(rayResult.scattering, 0.0f), transmittance);
+        weightedMeanDistance = max(rayResult.meanDistance, 0.0f) * opacity;
+    }
+
+    _CloudTraceOutput[coord] = result;
+    _CloudTraceDepthOutput[coord] = weightedMeanDistance;
+}

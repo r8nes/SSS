@@ -1,0 +1,114 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-7200000000000000002
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f1d90b0511784c9c8166110a4219774c, type: 3}
+  m_Name: GrassVolumeComponent
+  m_EditorClassIdentifier: Nelum.Runtime::Nelum.Rendering.GrassVolumeComponent
+  active: 1
+  state:
+    m_OverrideState: 0
+    m_Value: 1
+  maxDistance:
+    m_OverrideState: 1
+    m_Value: 150
+  distanceFadeDistance:
+    m_OverrideState: 1
+    m_Value: 60
+  targetRootSpacingPixels:
+    m_OverrideState: 1
+    m_Value: 6
+  maximumBladeSegments:
+    m_OverrideState: 1
+    m_Value: 3
+  nearEffectsDistance:
+    m_OverrideState: 1
+    m_Value: 30
+  interactionWorldSize:
+    m_OverrideState: 1
+    m_Value: 96
+  basePatchSize:
+    m_OverrideState: 1
+    m_Value: 1.6
+  targetPixelsPerBladeSegment:
+    m_OverrideState: 1
+    m_Value: 12
+  bladeDetailStartDistance:
+    m_OverrideState: 0
+    m_Value: 75
+  bladeDetailEndDistance:
+    m_OverrideState: 0
+    m_Value: 225
+  interactionResolution:
+    m_OverrideState: 1
+    m_Value: 64
+  maximumInteractors:
+    m_OverrideState: 1
+    m_Value: 32
+  interactionSimulationFrequency:
+    m_OverrideState: 1
+    m_Value: 30
+  interactionLayers:
+    m_OverrideState: 0
+    m_Value:
+      serializedVersion: 2
+      m_Bits: 4294967295
+  windResolution:
+    m_OverrideState: 1
+    m_Value: 64
+  windWorldSize:
+    m_OverrideState: 1
+    m_Value: 96
+  windSimulationFrequency:
+    m_OverrideState: 1
+    m_Value: 30
+  debugView:
+    m_OverrideState: 0
+    m_Value: 0
+--- !u!114 &-7100000000000000002
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a76fd08475e21554b8f284f723dd7cf8, type: 3}
+  m_Name: WaterRenderingSettings
+  m_EditorClassIdentifier: Aetheria.Runtime::Aetheria.Runtime.Water.WaterRenderingSettings
+  active: 1
+  enabled:
+    m_OverrideState: 0
+    m_Value: 1
+  simulationResolution:
+    m_OverrideState: 1
+    m_Value: 128
+  ambientProbeDimmer:
+    m_OverrideState: 0
+    m_Value: 0.5
+  environmentReflectionIntensity:
+    m_OverrideState: 0
+    m_Value: 1
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d7fd9488000d3734a9e00ee676215985, type: 3}
+  m_Name: Materials_Medium
+  m_EditorClassIdentifier: Unity.RenderPipelines.Core.Runtime::UnityEngine.Rendering.VolumeProfile
+  components:
+  - {fileID: -7100000000000000002}
+  - {fileID: -7200000000000000002}

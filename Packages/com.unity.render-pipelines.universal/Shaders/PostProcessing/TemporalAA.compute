@@ -1,0 +1,372 @@
+#pragma target 4.5
+#pragma kernel TaaVeryLow
+#pragma kernel TaaLow
+#pragma kernel TaaMedium
+#pragma kernel TaaHigh
+#pragma kernel TaaVeryHigh
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
+
+Texture2D<float4> _InputTexture;
+Texture2D<float> _CameraDepthTexture;
+Texture2D<float2> _TaaMotionVectorTex;
+Texture2D<float4> _TaaAccumulationTex;
+RWTexture2D<float4> _OutputTexture;
+
+SamplerState sampler_LinearClamp;
+
+CBUFFER_START(TemporalAAData)
+    float4 _SourceSize;                         // (width, height, 1 / width, 1 / height)
+    float4 _TaaMotionVectorTex_TexelSize;       // (1 / width, 1 / height, width, height)
+    float4 _TaaAccumulationTex_TexelSize;       // (1 / width, 1 / height, width, height)
+    float4 _TaaFilterWeights0;                  // weights 0..3
+    float4 _TaaFilterWeights1;                  // weights 4..7
+    float4 _TaaFilterWeights2;                  // weight 8 in x
+    float _TaaFrameInfluence;
+    float _TaaVarianceClampScale;
+    int _TaaLowPrecisionSource;
+    int _TaaAlphaOutput;
+CBUFFER_END
+
+#define TAA_GROUP_SIZE 16
+#define TAA_TILE_SIZE 18
+#define TAA_TILE_TEXELS (TAA_TILE_SIZE * TAA_TILE_SIZE)
+
+groupshared float4 s_Color[TAA_TILE_TEXELS];
+groupshared float s_Depth[TAA_TILE_TEXELS];
+
+float4 PostFxSpaceToLinear(float4 src)
+{
+#if UNITY_NO_LINEAR_COLORSPACE
+    return float4(src.xyz * src.xyz, src.w);
+#else
+    return src;
+#endif
+}
+
+float4 LinearToPostFxSpace(float4 src)
+{
+#if UNITY_NO_LINEAR_COLORSPACE
+    return float4(sqrt(max(src.xyz, 0.0)), src.w);
+#else
+    return src;
+#endif
+}
+
+float4 SceneToWorkingSpace(float4 src, bool useYCoCg)
+{
+    if (!useYCoCg)
+        return src;
+
+    float4 linearColor = PostFxSpaceToLinear(src);
+    return float4(RGBToYCoCg(linearColor.xyz), linearColor.w);
+}
+
+float4 WorkingSpaceToScene(float4 src, bool useYCoCg)
+{
+    float4 linearColor = useYCoCg ? float4(YCoCgToRGB(src.xyz), src.w) : src;
+    return LinearToPostFxSpace(linearColor);
+}
+
+float GetLuma(float3 color, bool useYCoCg)
+{
+    return useYCoCg ? color.x : Luminance(color);
+}
+
+float4 WorkingToPerceptual(float4 color, bool useYCoCg)
+{
+    float scale = rcp(GetLuma(color.xyz, useYCoCg) + 1.0);
+    return color * scale;
+}
+
+float4 PerceptualToWorking(float4 color, bool useYCoCg)
+{
+    float scale = rcp(1.0 - GetLuma(color.xyz, useYCoCg));
+    return color * scale;
+}
+
+float4 ApplyHistoryColorLerp(float4 workingAccumulation, float4 workingCenter, float frameInfluence, bool useYCoCg)
+{
+    float4 perceptualAccumulation = WorkingToPerceptual(workingAccumulation, useYCoCg);
+    float4 perceptualCenter = WorkingToPerceptual(workingCenter, useYCoCg);
+    return PerceptualToWorking(lerp(perceptualAccumulation, perceptualCenter, frameInfluence), useYCoCg);
+}
+
+int SharedIndex(int2 localCoord)
+{
+    return localCoord.y * TAA_TILE_SIZE + localCoord.x;
+}
+
+float4 SharedColor(int2 localCenter, int2 localPixelOffset)
+{
+    return s_Color[SharedIndex(localCenter + localPixelOffset)];
+}
+
+float SharedDepth(int2 localCenter, int2 localPixelOffset)
+{
+    return s_Depth[SharedIndex(localCenter + localPixelOffset)];
+}
+
+int2 ClampPixel(int2 pixel, int2 size)
+{
+    return clamp(pixel, int2(0, 0), size - 1);
+}
+
+void LoadSharedTile(uint2 groupId, uint2 groupThreadId, bool useYCoCg, bool loadDepth)
+{
+    int2 size = max(int2(_SourceSize.xy), int2(1, 1));
+    int2 groupBase = int2(groupId) * TAA_GROUP_SIZE;
+    uint linearThread = groupThreadId.y * TAA_GROUP_SIZE + groupThreadId.x;
+
+    [loop]
+    for (uint sharedIndex = linearThread; sharedIndex < TAA_TILE_TEXELS; sharedIndex += TAA_GROUP_SIZE * TAA_GROUP_SIZE)
+    {
+        int2 tileCoord = int2(sharedIndex % TAA_TILE_SIZE, sharedIndex / TAA_TILE_SIZE);
+        int2 pixel = ClampPixel(groupBase + tileCoord - 1, size);
+        s_Color[sharedIndex] = SceneToWorkingSpace(_InputTexture.Load(int3(pixel, 0)), useYCoCg);
+
+        if (loadDepth)
+        {
+            float depth = _CameraDepthTexture.Load(int3(pixel, 0));
+#if UNITY_REVERSED_Z
+            depth = 1.0 - depth;
+#endif
+            s_Depth[sharedIndex] = depth;
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+}
+
+void AddColorSample(inout float4 boxMin, inout float4 boxMax, inout float4 moment1, inout float4 moment2, int2 localCenter, int2 offset)
+{
+    float4 color = SharedColor(localCenter, offset);
+    boxMin = min(boxMin, color);
+    boxMax = max(boxMax, color);
+    moment1 += color;
+    moment2 += color * color;
+}
+
+void TestDepth(inout float bestDepth, inout int2 bestOffset, int2 localCenter, int2 offset)
+{
+    float depth = SharedDepth(localCenter, offset);
+    if (depth < bestDepth)
+    {
+        bestDepth = depth;
+        bestOffset = offset;
+    }
+}
+
+float4 SampleHistoryLinear(float2 uv, bool useYCoCg)
+{
+    return SceneToWorkingSpace(_TaaAccumulationTex.SampleLevel(sampler_LinearClamp, uv, 0.0), useYCoCg);
+}
+
+float4 SampleHistoryScene(float2 uv)
+{
+    return _TaaAccumulationTex.SampleLevel(sampler_LinearClamp, uv, 0.0);
+}
+
+// Filmic SMAA / HDRP five-tap bicubic reconstruction.
+// In a linear-color project RGB->YCoCg is a linear transform, so it is exactly
+// equivalent (apart from floating-point rounding) to perform the five-tap
+// reconstruction first and convert the result once. Gamma/no-linear projects keep
+// the per-sample conversion because PostFxSpaceToLinear is nonlinear there.
+float4 SampleHistoryBicubic5Tap(float2 uv, bool useYCoCg)
+{
+    float2 sourceTextureSize = _TaaAccumulationTex_TexelSize.zw;
+    float2 sourceTexelSize = _TaaAccumulationTex_TexelSize.xy;
+
+    float2 samplePos = uv * sourceTextureSize;
+    float2 tc1 = floor(samplePos - 0.5) + 0.5;
+    float2 f = samplePos - tc1;
+    float2 f2 = f * f;
+    float2 f3 = f * f2;
+
+    const float c = 0.5;
+    float2 w0 = -c * f3 + 2.0 * c * f2 - c * f;
+    float2 w1 = (2.0 - c) * f3 - (3.0 - c) * f2 + 1.0;
+    float2 w2 = -(2.0 - c) * f3 + (3.0 - 2.0 * c) * f2 + c * f;
+    float2 w3 = c * f3 - c * f2;
+    float2 w12 = w1 + w2;
+
+    float2 tc0 = sourceTexelSize * (tc1 - 1.0);
+    float2 tc3 = sourceTexelSize * (tc1 + 2.0);
+    float2 tc12 = sourceTexelSize * (tc1 + w2 / max(w12, 1e-6));
+
+    float cw0 = w12.x * w0.y;
+    float cw1 = w0.x * w12.y;
+    float cw2 = w12.x * w12.y;
+    float cw3 = w3.x * w12.y;
+    float cw4 = w12.x * w3.y;
+    float weightSum = cw0 + cw1 + cw2 + cw3 + cw4;
+    float invWeightSum = rcp(max(weightSum, 1e-6));
+
+#if UNITY_NO_LINEAR_COLORSPACE
+    float4 s0 = SampleHistoryLinear(float2(tc12.x, tc0.y), useYCoCg);
+    float4 s1 = SampleHistoryLinear(float2(tc0.x, tc12.y), useYCoCg);
+    float4 s2 = SampleHistoryLinear(float2(tc12.x, tc12.y), useYCoCg);
+    float4 s3 = SampleHistoryLinear(float2(tc3.x, tc12.y), useYCoCg);
+    float4 s4 = SampleHistoryLinear(float2(tc12.x, tc3.y), useYCoCg);
+    return (s0 * cw0 + s1 * cw1 + s2 * cw2 + s3 * cw3 + s4 * cw4) * invWeightSum;
+#else
+    float4 reconstructed =
+        (SampleHistoryScene(float2(tc12.x, tc0.y)) * cw0 +
+         SampleHistoryScene(float2(tc0.x, tc12.y)) * cw1 +
+         SampleHistoryScene(float2(tc12.x, tc12.y)) * cw2 +
+         SampleHistoryScene(float2(tc3.x, tc12.y)) * cw3 +
+         SampleHistoryScene(float2(tc12.x, tc3.y)) * cw4) * invWeightSum;
+    return SceneToWorkingSpace(reconstructed, useYCoCg);
+#endif
+}
+
+float4 ClipToAABBCenter(float4 history, float4 minimum, float4 maximum)
+{
+    float4 center = 0.5 * (maximum + minimum);
+    float4 extents = max(0.5 * (maximum - minimum), 6.103515625e-5);
+    float4 offset = history - center;
+    float3 unit = abs(offset.xyz / extents.xyz);
+    float maxUnit = max(unit.x, max(unit.y, unit.z));
+    return maxUnit > 1.0 ? center + offset / maxUnit : history;
+}
+
+float FilterWeight(int index)
+{
+    if (index < 4)
+        return _TaaFilterWeights0[index];
+    if (index < 8)
+        return _TaaFilterWeights1[index - 4];
+    return _TaaFilterWeights2.x;
+}
+
+float4 FilterCenterColor(int2 localCenter, bool useYCoCg)
+{
+    // Shared color is already in working space. YCoCg is a linear transform, so weighted
+    // filtering in working space is equivalent to filtering linear RGB then converting.
+    float4 filtered = SharedColor(localCenter, int2(0, 0)) * FilterWeight(0);
+    filtered += SharedColor(localCenter, int2(0, 1)) * FilterWeight(1);
+    filtered += SharedColor(localCenter, int2(1, 0)) * FilterWeight(2);
+    filtered += SharedColor(localCenter, int2(-1, 0)) * FilterWeight(3);
+    filtered += SharedColor(localCenter, int2(0, -1)) * FilterWeight(4);
+    filtered += SharedColor(localCenter, int2(-1, 1)) * FilterWeight(5);
+    filtered += SharedColor(localCenter, int2(1, -1)) * FilterWeight(6);
+    filtered += SharedColor(localCenter, int2(1, 1)) * FilterWeight(7);
+    filtered += SharedColor(localCenter, int2(-1, -1)) * FilterWeight(8);
+    return filtered;
+}
+
+void RunTemporalAA(uint2 dispatchThreadId, uint2 groupId, uint2 groupThreadId,
+    int clampQuality, int motionQuality, int historyQuality, bool centralFiltering, bool useYCoCg)
+{
+    LoadSharedTile(groupId, groupThreadId, useYCoCg, motionQuality > 0);
+
+    int2 size = max(int2(_SourceSize.xy), int2(1, 1));
+    int2 pixel = int2(dispatchThreadId);
+    if (any(pixel >= size))
+        return;
+
+    int2 localCenter = int2(groupThreadId.xy) + int2(1, 1);
+    float2 uv = (float2(pixel) + 0.5) * _SourceSize.zw;
+    float4 colorCenter = centralFiltering ? FilterCenterColor(localCenter, useYCoCg) : SharedColor(localCenter, int2(0, 0));
+
+    float4 boxMin = colorCenter;
+    float4 boxMax = colorCenter;
+    float4 moment1 = colorCenter;
+    float4 moment2 = colorCenter * colorCenter;
+
+    AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(0, -1));
+    AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(-1, 0));
+    AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(1, 0));
+    AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(0, 1));
+
+    if (clampQuality >= 1)
+    {
+        AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(-1, -1));
+        AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(1, -1));
+        AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(-1, 1));
+        AddColorSample(boxMin, boxMax, moment1, moment2, localCenter, int2(1, 1));
+    }
+
+    if (clampQuality >= 2)
+    {
+        float4 mean = moment1 / 9.0;
+        float4 stdDev = sqrt(abs(moment2 / 9.0 - mean * mean));
+        float4 devMin = mean - _TaaVarianceClampScale * stdDev;
+        float4 devMax = mean + _TaaVarianceClampScale * stdDev;
+        boxMin = max(boxMin, devMin);
+        boxMax = min(boxMax, devMax);
+    }
+
+    int2 bestOffset = int2(0, 0);
+    if (motionQuality > 0)
+    {
+        float bestDepth = 1.0;
+        TestDepth(bestDepth, bestOffset, localCenter, int2(0, 0));
+        TestDepth(bestDepth, bestOffset, localCenter, int2(1, 0));
+        TestDepth(bestDepth, bestOffset, localCenter, int2(0, -1));
+        TestDepth(bestDepth, bestOffset, localCenter, int2(-1, 0));
+        TestDepth(bestDepth, bestOffset, localCenter, int2(0, 1));
+
+        if (motionQuality >= 2)
+        {
+            TestDepth(bestDepth, bestOffset, localCenter, int2(-1, -1));
+            TestDepth(bestDepth, bestOffset, localCenter, int2(1, -1));
+            TestDepth(bestDepth, bestOffset, localCenter, int2(-1, 1));
+            TestDepth(bestDepth, bestOffset, localCenter, int2(1, 1));
+        }
+    }
+
+    float2 motionUv = uv + _TaaMotionVectorTex_TexelSize.xy * float2(bestOffset);
+    float2 velocity = -_TaaMotionVectorTex.SampleLevel(sampler_LinearClamp, motionUv, 0.0).xy;
+    float2 historyUv = uv + velocity;
+
+    float4 accumulation = historyQuality >= 2
+        ? SampleHistoryBicubic5Tap(historyUv, useYCoCg)
+        : SampleHistoryLinear(historyUv, useYCoCg);
+
+    bool useAabbClip = clampQuality >= 3 && _TaaLowPrecisionSource == 0;
+    float4 clampedAccumulation = useAabbClip
+        ? ClipToAABBCenter(accumulation, boxMin, boxMax)
+        : clamp(accumulation, boxMin, boxMax);
+
+    float frameInfluence = _TaaFrameInfluence;
+    if (historyQuality >= 1 && any(abs(uv - 0.5 + velocity) > 0.5))
+        frameInfluence = 1.0;
+
+    float4 workingColor = ApplyHistoryColorLerp(clampedAccumulation, colorCenter, frameInfluence, useYCoCg);
+    float4 sceneColor = WorkingSpaceToScene(workingColor, useYCoCg);
+    sceneColor.xyz = max(sceneColor.xyz, 0.0);
+    sceneColor.w = _TaaAlphaOutput != 0 ? max(sceneColor.w, 0.0) : 1.0;
+    _OutputTexture[pixel] = sceneColor;
+}
+
+[numthreads(TAA_GROUP_SIZE, TAA_GROUP_SIZE, 1)]
+void TaaVeryLow(uint3 dispatchThreadId : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    RunTemporalAA(dispatchThreadId.xy, groupId.xy, groupThreadId.xy, 0, 0, 0, false, false);
+}
+
+[numthreads(TAA_GROUP_SIZE, TAA_GROUP_SIZE, 1)]
+void TaaLow(uint3 dispatchThreadId : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    RunTemporalAA(dispatchThreadId.xy, groupId.xy, groupThreadId.xy, 0, 1, 1, false, false);
+}
+
+[numthreads(TAA_GROUP_SIZE, TAA_GROUP_SIZE, 1)]
+void TaaMedium(uint3 dispatchThreadId : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    RunTemporalAA(dispatchThreadId.xy, groupId.xy, groupThreadId.xy, 2, 2, 1, false, true);
+}
+
+[numthreads(TAA_GROUP_SIZE, TAA_GROUP_SIZE, 1)]
+void TaaHigh(uint3 dispatchThreadId : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    RunTemporalAA(dispatchThreadId.xy, groupId.xy, groupThreadId.xy, 2, 2, 2, false, true);
+}
+
+[numthreads(TAA_GROUP_SIZE, TAA_GROUP_SIZE, 1)]
+void TaaVeryHigh(uint3 dispatchThreadId : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    RunTemporalAA(dispatchThreadId.xy, groupId.xy, groupThreadId.xy, 3, 2, 2, true, true);
+}

@@ -1,0 +1,153 @@
+#pragma only_renderers d3d11 vulkan
+#pragma target 5.0
+
+#pragma kernel WaterDeferredLighting
+#pragma kernel WaterDeferredLightingRefraction WATER_COMPOSITE_BEFORE_REFRACTION=1
+
+#define _CLUSTER_LIGHT_LOOP 1
+
+#pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE
+#pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
+#pragma multi_compile _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
+#pragma multi_compile _ _LIGHT_LAYERS
+#pragma multi_compile _ _LIGHT_COOKIES
+#pragma multi_compile _ _REFLECTION_PROBE_BLENDING
+#pragma multi_compile _ _REFLECTION_PROBE_BOX_PROJECTION
+#pragma multi_compile _ _REFLECTION_PROBE_ATLAS
+#pragma multi_compile _ REFLECTION_PROBE_ROTATION
+
+#define PROBE_VOLUMES_DYNAMIC_BRANCH 1
+#pragma dynamic_branch _ PROBE_VOLUMES_L1 PROBE_VOLUMES_L2
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "../../Core/WaterShaderVariables.cs.hlsl"
+
+#define WATER_USE_CAMERA_DEPTH 1
+float4 _WaterRenderResolution;
+uint _WaterHasScreenSpaceReflection;
+uint _WaterHasScreenSpaceShadows;
+
+#include "WaterDeferredLighting.hlsl"
+
+RWTexture2D<float4> _WaterColorRW;
+
+#if defined(WATER_COMPOSITE_BEFORE_REFRACTION)
+Texture2D<float4> _BeforeRefractionTexture;
+#endif
+
+groupshared uint gs_WaterTileHasWater;
+groupshared uint gs_WaterTileFeatureFlags;
+
+float4 CompositeWaterBeforeRefraction(uint2 positionSS, float4 background)
+{
+#if defined(WATER_COMPOSITE_BEFORE_REFRACTION)
+    float4 front = _BeforeRefractionTexture.Load(int3(positionSS, 0));
+    float transmittance = saturate(1.0 - front.a);
+    return float4(front.rgb + background.rgb * transmittance, background.a);
+#else
+    return background;
+#endif
+}
+
+void RunWaterDeferredLighting(
+    uint3 dispatchThreadId,
+    uint3 groupId,
+    uint groupIndex)
+{
+    uint2 resolution = (uint2)_WaterRenderResolution.xy;
+    uint2 currentCoord = dispatchThreadId.xy;
+    bool insideScreen = currentCoord.x < resolution.x && currentCoord.y < resolution.y;
+
+    if (groupIndex == 0u)
+    {
+        gs_WaterTileHasWater = 0u;
+        gs_WaterTileFeatureFlags = WATER_LIGHTING_FEATURE_BASE;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    bool hasWater = false;
+    if (insideScreen)
+    {
+        uint stencilValue = GetStencilValue(_WaterStencilTexture.Load(int3(currentCoord, 0)));
+        hasWater = stencilValue != 0u;
+        if (hasWater)
+        {
+            uint previousValue;
+            InterlockedOr(gs_WaterTileHasWater, 1u, previousValue);
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (gs_WaterTileHasWater == 0u)
+    {
+        if (insideScreen)
+            _WaterColorRW[currentCoord] = _WaterSceneColorTexture.Load(int3(currentCoord, 0));
+        return;
+    }
+
+    if (groupIndex == 0u)
+    {
+        uint2 tilePixel = min(groupId.xy * 8u + 4u, max(resolution, 1u) - 1u);
+        float2 tileUV = (float2(tilePixel) + 0.5) * _WaterRenderResolution.zw;
+        uint2 urpTilePresence = ClusterTileGetLightProbePresence(tileUV);
+        uint featureFlags = WATER_LIGHTING_FEATURE_BASE;
+        if (urpTilePresence.x != 0u)
+            featureFlags |= WATER_LIGHTING_FEATURE_PUNCTUAL;
+#if CLUSTER_HAS_REFLECTION_PROBES
+        if (urpTilePresence.y != 0u)
+            featureFlags |= WATER_LIGHTING_FEATURE_ENVIRONMENT;
+#endif
+        gs_WaterTileFeatureFlags = featureFlags;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (!insideScreen)
+        return;
+
+    if (!hasWater)
+    {
+        _WaterColorRW[currentCoord] = _WaterSceneColorTexture.Load(int3(currentCoord, 0));
+        return;
+    }
+
+    float2 positionNDC = (float2(currentCoord) + 0.5) * _WaterRenderResolution.zw;
+    float rawWaterDepth = _WaterDepthTexture.Load(int3(currentCoord, 0)).r;
+    float opaqueDepth = WaterSampleCameraDepth(positionNDC);
+    if (!COMPARE_DEVICE_DEPTH_CLOSEREQUAL(rawWaterDepth, opaqueDepth))
+    {
+        float4 sceneColor = _WaterSceneColorTexture.Load(int3(currentCoord, 0));
+        _WaterColorRW[currentCoord] = CompositeWaterBeforeRefraction(currentCoord, sceneColor);
+        return;
+    }
+
+    float4 metadata = LoadWaterMetadataGBuffer(currentCoord);
+    half4 color = ShadeDeferredWater(
+        positionNDC,
+        currentCoord,
+        gs_WaterTileFeatureFlags,
+        metadata,
+        rawWaterDepth);
+    _WaterColorRW[currentCoord] = CompositeWaterBeforeRefraction(currentCoord, color);
+}
+
+
+[numthreads(8, 8, 1)]
+void WaterDeferredLighting(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uint3 groupId : SV_GroupID,
+    uint groupIndex : SV_GroupIndex)
+{
+    RunWaterDeferredLighting(dispatchThreadId, groupId, groupIndex);
+}
+
+[numthreads(8, 8, 1)]
+void WaterDeferredLightingRefraction(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uint3 groupId : SV_GroupID,
+    uint groupIndex : SV_GroupIndex)
+{
+    RunWaterDeferredLighting(dispatchThreadId, groupId, groupIndex);
+}

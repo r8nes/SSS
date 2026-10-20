@@ -1,0 +1,66 @@
+#pragma kernel ConvolveCubemap
+#pragma only_renderers d3d11 playstation xboxone xboxseries vulkan metal switch switch2
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/GlobalSamplers.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonLighting.hlsl"
+#include "../../ShaderLibrary/Common/EnvironmentCubemap.hlsl"
+
+TEXTURECUBE(_MainTex);
+StructuredBuffer<float4> _GgxSamples;
+RWTexture2DArray<float3> _Output;
+
+int _MipResolution;
+int _MipLevel;
+
+// The first two mips retain separate desktop and mobile sample sequences.
+static const uint k_SamplesPerMip = 68u;
+static const uint k_MobileSampleOffset = 34u;
+
+uint SampleCountForMip(uint mip)
+{
+    uint sampleCount = 34u;
+#if defined(SHADER_API_MOBILE) || defined(SHADER_API_SWITCH) || defined(SHADER_API_SWITCH2)
+    if (mip == 1u) sampleCount = 21u;
+#else
+    if (mip == 1u) sampleCount = 13u;
+    else if (mip == 2u) sampleCount = 21u;
+#endif
+    return sampleCount;
+}
+
+uint SampleOffsetForMip(uint mip)
+{
+    uint offset = (mip - 1u) * k_SamplesPerMip;
+#if defined(SHADER_API_MOBILE) || defined(SHADER_API_SWITCH) || defined(SHADER_API_SWITCH2)
+    if (mip <= 2u) offset += k_MobileSampleOffset;
+#endif
+    return offset;
+}
+
+[numthreads(8, 8, 1)]
+void ConvolveCubemap(uint3 coord : SV_DispatchThreadID)
+{
+    if (coord.z >= 6u || any(coord.xy >= (uint)_MipResolution))
+        return;
+
+    float3 N = CubeFaceTexelDirection(coord.z, coord.xy, (uint)_MipResolution);
+    float3x3 localToWorld = GetLocalFrame(N);
+    uint sampleOffset = SampleOffsetForMip((uint)_MipLevel);
+    uint sampleCount = SampleCountForMip((uint)_MipLevel);
+    float3 radiance = 0.0;
+
+    for (uint i = 0u; i < sampleCount; ++i)
+    {
+        uint index = 2u * (sampleOffset + i);
+        float4 directionAndLod = _GgxSamples[index];
+        float weight = _GgxSamples[index + 1u].x;
+        if (weight <= 0.0) continue;
+
+        float3 L = mul(directionAndLod.xyz, localToWorld);
+        radiance += weight * SAMPLE_TEXTURECUBE_LOD(
+            _MainTex, sampler_TrilinearClamp, L, directionAndLod.w).rgb;
+    }
+
+    _Output[coord] = radiance;
+}

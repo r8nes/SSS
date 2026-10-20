@@ -1,0 +1,51 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 69a36b61287849ff8489ae9f5e25b641, type: 3}
+  m_Name: SSRQuality
+  m_EditorClassIdentifier: 
+  _id:
+    _a: 789455938
+    _b: 1567639907
+    _c: -1113750472
+    _d: 1085661673
+  _displayName: Screen-Space Reflections
+  _category: Reflections
+  _rendererFeature: {fileID: 8125819374221802862, guid: a7c788555891d944c8dd40af22b2ab2a, type: 2}
+  _tiers:
+  - Id:
+      _a: 423302983
+      _b: 1988577079
+      _c: -1726061022
+      _d: -1797148065
+    DisplayName: Off
+    Patch: {fileID: 11400000, guid: 90940e924be74ff388b09fd654d3df10, type: 2}
+  - Id:
+      _a: 1628557308
+      _b: -1674556581
+      _c: -1788727940
+      _d: 1010006849
+    DisplayName: Low
+    Patch: {fileID: 11400000, guid: 8a2a6373e0e3c1a45b7489b15023c397, type: 2}
+  - Id:
+      _a: 1642309000
+      _b: -390639948
+      _c: -1130950802
+      _d: -1820774854
+    DisplayName: Medium
+    Patch: {fileID: 11400000, guid: 3798c2d7b00b47a4fbb47ee40d31965d, type: 2}
+  - Id:
+      _a: 138609207
+      _b: 1577667767
+      _c: -1630070246
+      _d: -665215488
+    DisplayName: High
+    Patch: {fileID: 11400000, guid: ea7b11b9073362a4d9f692662582f2d1, type: 2}

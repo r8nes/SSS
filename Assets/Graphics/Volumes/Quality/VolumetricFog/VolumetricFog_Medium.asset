@@ -1,0 +1,119 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-7000000000000000002
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dfe0aabdfcca48cb96d991377e40473d, type: 3}
+  m_Name: Fog
+  m_EditorClassIdentifier: Aetheria.Runtime::Aetheria.Runtime.Overrides.FogVolume
+  active: 1
+  Enabled:
+    m_OverrideState: 0
+    m_Value: 0
+  ColorMode:
+    m_OverrideState: 0
+    m_Value: 1
+  Color:
+    m_OverrideState: 0
+    m_Value: {r: 0.5, g: 0.5, b: 0.5, a: 1}
+  Tint:
+    m_OverrideState: 0
+    m_Value: {r: 1, g: 1, b: 1, a: 1}
+  MaxFogDistance:
+    m_OverrideState: 0
+    m_Value: 5000
+  MipFogMaxMip:
+    m_OverrideState: 0
+    m_Value: 0.5
+  MipFogNear:
+    m_OverrideState: 0
+    m_Value: 0
+  MipFogFar:
+    m_OverrideState: 0
+    m_Value: 1000
+  BaseHeight:
+    m_OverrideState: 0
+    m_Value: 0
+  MaximumHeight:
+    m_OverrideState: 0
+    m_Value: 50
+  MeanFreePath:
+    m_OverrideState: 0
+    m_Value: 400
+  Albedo:
+    m_OverrideState: 0
+    m_Value: {r: 1, g: 1, b: 1, a: 1}
+  EnableVolumetricFog:
+    m_OverrideState: 0
+    m_Value: 0
+  VolumetricExtinctionScale:
+    m_OverrideState: 0
+    m_Value: 1
+  DepthExtent:
+    m_OverrideState: 0
+    m_Value: 64
+  Anisotropy:
+    m_OverrideState: 0
+    m_Value: 0
+  ReceiveMainLightShadows:
+    m_OverrideState: 0
+    m_Value: 1
+  MainLightShadowDimmer:
+    m_OverrideState: 0
+    m_Value: 1
+  GlobalLightProbeDimmer:
+    m_OverrideState: 0
+    m_Value: 1
+  NearDampEnable:
+    m_OverrideState: 0
+    m_Value: 0
+  FogStartDistance:
+    m_OverrideState: 0
+    m_Value: 10
+  DampDistance:
+    m_OverrideState: 0
+    m_Value: 10
+  GridPreset:
+    m_OverrideState: 1
+    m_Value: 1
+  FroxelWidth:
+    m_OverrideState: 0
+    m_Value: 160
+  FroxelHeight:
+    m_OverrideState: 0
+    m_Value: 90
+  FroxelDepth:
+    m_OverrideState: 0
+    m_Value: 64
+  SliceDistributionUniformity:
+    m_OverrideState: 1
+    m_Value: 0.75
+  GaussianFilterEnabled:
+    m_OverrideState: 1
+    m_Value: 0
+  ReconstructionFilter:
+    m_OverrideState: 1
+    m_Value: 1
+  MainLightShadowsEnabled:
+    m_OverrideState: 1
+    m_Value: 1
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d7fd9488000d3734a9e00ee676215985, type: 3}
+  m_Name: VolumetricFog_Medium
+  m_EditorClassIdentifier: Unity.RenderPipelines.Core.Runtime::UnityEngine.Rendering.VolumeProfile
+  components:
+  - {fileID: -7000000000000000002}

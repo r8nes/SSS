@@ -1,0 +1,222 @@
+
+#pragma only_renderers d3d11 vulkan
+#pragma multi_compile _ UNITY_DEVICE_SUPPORTS_WAVE_ANY
+
+#pragma kernel WaterValidateWaveOperations FFT_VALIDATE_KERNEL=WaterValidateWaveOperations
+#pragma kernel WaterRowFFT_64  FFT_ROW_KERNEL=WaterRowFFT_64 FFT_RESOLUTION=64  FFT_ROWS_PER_GROUP=2 FFT_OUTER_RADIX=0
+#pragma kernel WaterRowFFT_128 FFT_ROW_KERNEL=WaterRowFFT_128 FFT_RESOLUTION=128 FFT_ROWS_PER_GROUP=1 FFT_OUTER_RADIX=1
+#pragma kernel WaterRowFFT_256 FFT_ROW_KERNEL=WaterRowFFT_256 FFT_RESOLUTION=256 FFT_ROWS_PER_GROUP=1 FFT_OUTER_RADIX=2
+#pragma kernel WaterRowFFTFinal_64  FFT_ROW_KERNEL=WaterRowFFTFinal_64 FFT_RESOLUTION=64  FFT_ROWS_PER_GROUP=2 FFT_OUTER_RADIX=0 FFT_REAL_OUTPUT_ONLY=1
+#pragma kernel WaterRowFFTFinal_128 FFT_ROW_KERNEL=WaterRowFFTFinal_128 FFT_RESOLUTION=128 FFT_ROWS_PER_GROUP=1 FFT_OUTER_RADIX=1 FFT_REAL_OUTPUT_ONLY=1
+#pragma kernel WaterRowFFTFinal_256 FFT_ROW_KERNEL=WaterRowFFTFinal_256 FFT_RESOLUTION=256 FFT_ROWS_PER_GROUP=1 FFT_OUTER_RADIX=2 FFT_REAL_OUTPUT_ONLY=1
+#pragma kernel WaterTransposeComplex FFT_TRANSPOSE_COMPLEX_KERNEL=WaterTransposeComplex
+#pragma kernel WaterTransposeFinalize FFT_TRANSPOSE_FINAL_KERNEL=WaterTransposeFinalize
+
+#include "WaterFourierTransformCommon.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Sampling/Hammersley.hlsl"
+
+RWStructuredBuffer<uint> _WaveOperationsSupportResult;
+
+#if defined(FFT_VALIDATE_KERNEL)
+[numthreads(128, 1, 1)]
+void FFT_VALIDATE_KERNEL(uint groupIndex : SV_GroupIndex)
+{
+    if (groupIndex != 0u)
+        return;
+#if defined(UNITY_HW_SUPPORTS_WAVE)
+    uint laneCount = WaveGetLaneCount();
+    _WaveOperationsSupportResult[0] = (laneCount == 32u || laneCount == 64u || laneCount == 128u) ? 1u : 0u;
+#else
+    _WaveOperationsSupportResult[0] = 0u;
+#endif
+}
+#endif
+
+#if defined(FFT_ROW_KERNEL)
+
+groupshared float4 g_FftReal[256];
+groupshared float4 g_FftImaginary[256];
+
+#if defined(UNITY_HW_SUPPORTS_WAVE)
+
+static const float2 k_InverseTwiddle32[16] =
+{
+    float2( 1.0000000000, 0.0000000000),
+    float2( 0.9807852804, 0.1950903220),
+    float2( 0.9238795325, 0.3826834324),
+    float2( 0.8314696123, 0.5555702330),
+    float2( 0.7071067812, 0.7071067812),
+    float2( 0.5555702330, 0.8314696123),
+    float2( 0.3826834324, 0.9238795325),
+    float2( 0.1950903220, 0.9807852804),
+    float2( 0.0000000000, 1.0000000000),
+    float2(-0.1950903220, 0.9807852804),
+    float2(-0.3826834324, 0.9238795325),
+    float2(-0.5555702330, 0.8314696123),
+    float2(-0.7071067812, 0.7071067812),
+    float2(-0.8314696123, 0.5555702330),
+    float2(-0.9238795325, 0.3826834324),
+    float2(-0.9807852804, 0.1950903220)
+};
+
+FftComplex4 ReadLogicalLane(FftComplex4 value, uint logicalLane, uint targetLogicalLane)
+{
+    uint physicalLane = WaveGetLaneIndex();
+    uint logicalBase = physicalLane - logicalLane;
+    return CreateFftComplex4(
+        WaveReadLaneAt(value.realPart, logicalBase + targetLogicalLane),
+        WaveReadLaneAt(value.imaginaryPart, logicalBase + targetLogicalLane));
+}
+
+FftComplex4 InverseWaveFFT32(FftComplex4 value, uint logicalLane)
+{
+    value = ReadLogicalLane(value, logicalLane, (ReverseBits32(logicalLane) >> 27u));
+
+    [unroll]
+    for (uint transformSize = 2u; transformSize <= 32u; transformSize <<= 1u)
+    {
+        uint halfSize = transformSize >> 1u;
+        uint offset = logicalLane & (transformSize - 1u);
+        uint twiddleIndex = offset & (halfSize - 1u);
+        FftComplex4 partner = ReadLogicalLane(value, logicalLane, logicalLane ^ halfSize);
+        uint rootIndex = twiddleIndex * (32u / transformSize);
+        float2 twiddle = k_InverseTwiddle32[rootIndex];
+
+        if (offset < halfSize)
+            value = AddFftComplex4(value, MultiplyFftComplex4ByTwiddle(partner, twiddle));
+        else
+            value = SubtractFftComplex4(partner, MultiplyFftComplex4ByTwiddle(value, twiddle));
+    }
+    return value;
+}
+#endif
+
+[numthreads(128, 1, 1)]
+void FFT_ROW_KERNEL(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
+{
+#if !defined(UNITY_HW_SUPPORTS_WAVE)
+    return;
+#else
+    const uint totalElements = FFT_RESOLUTION * FFT_ROWS_PER_GROUP;
+
+    for (uint sharedIndex = groupIndex; sharedIndex < totalElements; sharedIndex += 128u)
+    {
+        uint rowInGroup = sharedIndex / FFT_RESOLUTION;
+        uint column = sharedIndex - rowInGroup * FFT_RESOLUTION;
+        uint row = groupID.y * FFT_ROWS_PER_GROUP + rowInGroup;
+        int2 sourcePosition = int2(column, row);
+        g_FftReal[sharedIndex] = _FftRealInput[sourcePosition];
+        g_FftImaginary[sharedIndex] = _FftImaginaryInput[sourcePosition];
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+#if FFT_RESOLUTION == 64
+    uint rowInGroup = groupIndex >> 6u;
+    uint localThread = groupIndex & 63u;
+    uint subgroupIndex = localThread >> 5u;
+    uint logicalLane = localThread & 31u;
+    uint rowBase = rowInGroup * 64u;
+
+    uint inputIndex = rowBase + 2u * logicalLane + subgroupIndex;
+    FftComplex4 value = CreateFftComplex4(g_FftReal[inputIndex], g_FftImaginary[inputIndex]);
+    GroupMemoryBarrierWithGroupSync();
+    value = InverseWaveFFT32(value, logicalLane);
+    g_FftReal[rowBase + subgroupIndex * 32u + logicalLane] = value.realPart;
+    g_FftImaginary[rowBase + subgroupIndex * 32u + logicalLane] = value.imaginaryPart;
+    GroupMemoryBarrierWithGroupSync();
+
+    FftComplex4 value0 = CreateFftComplex4(
+        g_FftReal[rowBase + logicalLane],
+        g_FftImaginary[rowBase + logicalLane]);
+    FftComplex4 value1 = CreateFftComplex4(
+        g_FftReal[rowBase + 32u + logicalLane],
+        g_FftImaginary[rowBase + 32u + logicalLane]);
+    value1 = MultiplyFftComplex4ByPhase(value1, TWO_PI * logicalLane / 64.0);
+    InverseFft2(value0, value1);
+    FftComplex4 outputValue;
+    if (subgroupIndex == 0u)
+        outputValue = value0;
+    else
+        outputValue = value1;
+
+    uint outputRow = groupID.y * 2u + rowInGroup;
+    int2 outputPosition = int2(localThread, outputRow);
+    _FftRealOutput[outputPosition] = outputValue.realPart;
+    #if !defined(FFT_REAL_OUTPUT_ONLY)
+    _FftImaginaryOutput[outputPosition] = outputValue.imaginaryPart;
+    #endif
+#else
+    uint subgroupIndex = groupIndex >> 5u;
+    uint logicalLane = groupIndex & 31u;
+    uint innerInputIndex = 4u * logicalLane + subgroupIndex;
+
+    FftComplex4 outerValues[FFT_OUTER_RADIX];
+    [unroll]
+    for (uint outerIndex = 0u; outerIndex < FFT_OUTER_RADIX; ++outerIndex)
+    {
+        uint sourceIndex = FFT_OUTER_RADIX * innerInputIndex + outerIndex;
+        outerValues[outerIndex] = CreateFftComplex4(
+            g_FftReal[sourceIndex], g_FftImaginary[sourceIndex]);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint outerIndex = 0u; outerIndex < FFT_OUTER_RADIX; ++outerIndex)
+    {
+        FftComplex4 value = InverseWaveFFT32(outerValues[outerIndex], logicalLane);
+        uint sharedIndex = outerIndex * 128u + subgroupIndex * 32u + logicalLane;
+        g_FftReal[sharedIndex] = value.realPart;
+        g_FftImaginary[sharedIndex] = value.imaginaryPart;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    uint innerOutputIndex = groupIndex;
+    uint radix4Output = subgroupIndex;
+
+    [unroll]
+    for (uint outerIndex = 0u; outerIndex < FFT_OUTER_RADIX; ++outerIndex)
+    {
+        FftComplex4 value0 = CreateFftComplex4(
+            g_FftReal[outerIndex * 128u + logicalLane],
+            g_FftImaginary[outerIndex * 128u + logicalLane]);
+        FftComplex4 value1 = CreateFftComplex4(
+            g_FftReal[outerIndex * 128u + 32u + logicalLane],
+            g_FftImaginary[outerIndex * 128u + 32u + logicalLane]);
+        FftComplex4 value2 = CreateFftComplex4(
+            g_FftReal[outerIndex * 128u + 64u + logicalLane],
+            g_FftImaginary[outerIndex * 128u + 64u + logicalLane]);
+        FftComplex4 value3 = CreateFftComplex4(
+            g_FftReal[outerIndex * 128u + 96u + logicalLane],
+            g_FftImaginary[outerIndex * 128u + 96u + logicalLane]);
+
+        float innerPhase = TWO_PI * logicalLane / 128.0;
+        ApplyInverseFftRadix4Twiddles(value1, value2, value3, innerPhase);
+        outerValues[outerIndex] = SelectInverseFft4(
+            value0, value1, value2, value3, radix4Output);
+    }
+
+#if FFT_OUTER_RADIX == 1
+    int2 outputPosition = int2(innerOutputIndex, groupID.y);
+    _FftRealOutput[outputPosition] = outerValues[0].realPart;
+    #if !defined(FFT_REAL_OUTPUT_ONLY)
+    _FftImaginaryOutput[outputPosition] = outerValues[0].imaginaryPart;
+    #endif
+#elif FFT_OUTER_RADIX == 2
+    outerValues[1] = MultiplyFftComplex4ByPhase(outerValues[1],
+        TWO_PI * innerOutputIndex / 256.0);
+    InverseFft2(outerValues[0], outerValues[1]);
+    [unroll]
+    for (uint outputIndex = 0u; outputIndex < 2u; ++outputIndex)
+    {
+        int2 outputPosition = int2(innerOutputIndex + outputIndex * 128u, groupID.y);
+        _FftRealOutput[outputPosition] = outerValues[outputIndex].realPart;
+        #if !defined(FFT_REAL_OUTPUT_ONLY)
+        _FftImaginaryOutput[outputPosition] = outerValues[outputIndex].imaginaryPart;
+        #endif
+    }
+#endif
+#endif
+#endif
+}
+
+#endif

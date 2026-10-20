@@ -1,0 +1,57 @@
+﻿using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+namespace Akila.FPSFramework.UI
+{
+    [AddComponentMenu("Akila/FPS Framework/UI/FPS Counter")]
+    public class FPSCounter : MonoBehaviour
+    {
+        public float updateInterval = 10;
+        public Color labelColor = Color.gray;
+        public Color countColor = Color.white;
+
+        private float framerate;
+
+        private TextMeshProUGUI text;
+        const float FPSMeasurePeriod = 0.5f;
+        private int FPSAccumulator = 0;
+        private float FPSPeriod = 0;
+        private float nextUpdate;
+
+        private string labelColorHex;
+        private string countColorHex;
+
+        private void Start()
+        {
+            text = GetComponent<TextMeshProUGUI>();
+            FPSPeriod = Time.realtimeSinceStartup + FPSMeasurePeriod;
+
+            labelColorHex = ColorUtility.ToHtmlStringRGB(labelColor);
+            countColorHex = ColorUtility.ToHtmlStringRGB(countColor);
+        }
+
+        private void Update()
+        {
+            FPSAccumulator++;
+            if (Time.realtimeSinceStartup > FPSPeriod)
+            {
+                framerate = (int)(FPSAccumulator / FPSMeasurePeriod);
+                FPSAccumulator = 0;
+                FPSPeriod += FPSMeasurePeriod;
+            }
+
+            if (Time.time >= nextUpdate)
+            {
+                nextUpdate = Time.time + 1 / updateInterval;
+                UpdateUI();
+            }
+        }
+
+        private void UpdateUI()
+        {
+            text.text = $"<color=#{labelColorHex}>FPS: <color=#{countColorHex}>{framerate}";
+        }
+    }
+}
