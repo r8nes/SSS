@@ -66,12 +66,16 @@ namespace ShooterShop.Customers
         public async UniTask StartAsync(CancellationToken cancellation)
         {
             _range.SessionFinished += OnSessionFinished;
-            await UniTask.WaitUntil(() => NetworkServer.active, cancellationToken: cancellation);
+
+            if (await UniTask.WaitUntil(() => NetworkServer.active, cancellationToken: cancellation).SuppressCancellationThrow())
+                return;
 
             while (!cancellation.IsCancellationRequested && NetworkServer.active)
             {
                 var interval = Random.Range(_config.SpawnInterval.x, _config.SpawnInterval.y);
-                await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation);
+
+                if (await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation).SuppressCancellationThrow())
+                    return;
 
                 if (_day.IsOpen && _customers.Count < _config.MaxCustomers && TryGetFreeSlot(out var slot))
                     Spawn(slot);

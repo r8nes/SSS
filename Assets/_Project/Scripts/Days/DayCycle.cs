@@ -26,7 +26,9 @@ namespace ShooterShop.Days
         public async UniTask StartAsync(CancellationToken cancellation)
         {
             _state.NextDayRequested += OnNextDayRequested;
-            await UniTask.WaitUntil(() => NetworkServer.active && _state.isServer, cancellationToken: cancellation);
+
+            if (await UniTask.WaitUntil(() => NetworkServer.active && _state.isServer, cancellationToken: cancellation).SuppressCancellationThrow())
+                return;
 
             if (_state.Day == 0)
                 OpenDay(_startingState.CompletedDays + 1);

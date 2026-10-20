@@ -16,7 +16,9 @@ namespace ShooterShop.Loading
 
         public async UniTask StartAsync(CancellationToken cancellation)
         {
-            await UniTask.WaitUntil(() => NetworkClient.localPlayer != null, cancellationToken: cancellation);
+            if (await UniTask.WaitUntil(() => NetworkClient.localPlayer != null, cancellationToken: cancellation).SuppressCancellationThrow())
+                return;
+
             _loadingScreen.Hide();
         }
     }
