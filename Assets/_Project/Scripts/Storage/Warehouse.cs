@@ -10,8 +10,9 @@ namespace ShooterShop.Storage
         private readonly Dictionary<ProductConfig, int> _stock = new();
 
         public event Action<ProductConfig, int> StockChanged;
+        public event Action CapacityChanged;
 
-        public int Capacity { get; }
+        public int Capacity { get; private set; }
         public int UsedSpace { get; private set; }
         public int FreeSpace => Capacity - UsedSpace;
         public IReadOnlyDictionary<ProductConfig, int> Stock => _stock;
@@ -46,6 +47,15 @@ namespace ShooterShop.Storage
 
             SetAmount(product, GetAmount(product) - amount);
             return true;
+        }
+
+        public void IncreaseCapacity(int amount)
+        {
+            if (amount <= 0)
+                return;
+
+            Capacity += amount;
+            CapacityChanged?.Invoke();
         }
 
         private void SetAmount(ProductConfig product, int amount)

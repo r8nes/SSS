@@ -1,3 +1,4 @@
+using ShooterShop.Upgrades;
 using Sirenix.OdinInspector;
 using UnityEngine;
 
@@ -28,6 +29,10 @@ namespace ShooterShop.Catalog
         [BoxGroup("Storage"), MinValue(1), SuffixLabel("slots")]
         [SerializeField] private int _storageSize = 1;
 
+        [BoxGroup("Unlock"), AssetsOnly]
+        [InfoBox("Leave empty if the product is available from the start")]
+        [SerializeField] private UpgradeConfig _requiredUpgrade;
+
         [BoxGroup("Visual"), AssetsOnly]
         [SerializeField] private GameObject _displayPrefab;
 
@@ -39,6 +44,7 @@ namespace ShooterShop.Catalog
         public int SellPrice => _sellPrice;
         public int StorageSize => _storageSize;
         public GameObject DisplayPrefab => _displayPrefab;
+        public UpgradeConfig RequiredUpgrade => _requiredUpgrade;
         public bool IsAmmo => _category == ProductCategory.Ammo;
 
         private bool IsUnprofitable => _sellPrice <= _buyPrice;

@@ -1,6 +1,7 @@
 using System;
 using Akila.FPSFramework;
 using Mirror;
+using ShooterShop.Upgrades;
 using Sirenix.OdinInspector;
 using TMPro;
 using UnityEngine;
@@ -11,6 +12,9 @@ namespace ShooterShop.Range
     {
         [BoxGroup("Layout"), MinValue(1)]
         [SerializeField] private int _number = 1;
+
+        [BoxGroup("Layout"), AssetsOnly]
+        [SerializeField] private UpgradeConfig _requiredUpgrade;
 
         [BoxGroup("Layout"), Required, ChildGameObjectsOnly]
         [SerializeField] private Transform _standPoint;
@@ -53,6 +57,7 @@ namespace ShooterShop.Range
         public bool IsReserved { get; private set; }
         public bool IsAvailable => !_isOccupied && !IsReserved;
         public int Number => _number;
+        public UpgradeConfig RequiredUpgrade => _requiredUpgrade;
 
         public override void OnStartClient() => _target.Hit += OnTargetHit;
 
@@ -97,10 +102,10 @@ namespace ShooterShop.Range
             RpcFlash();
         }
 
-        public void TickDisplay()
+        public void TickDisplay(bool isUnlocked)
         {
-            var text = _isOccupied
-                ? $"LANE {Number}\n{FormatTime(_sessionEndTime - NetworkTime.time)}  Hits {_hits}"
+            var text = !isUnlocked ? $"LANE {Number}\nLOCKED"
+                : _isOccupied ? $"LANE {Number}\n{FormatTime(_sessionEndTime - NetworkTime.time)}  Hits {_hits}"
                 : $"LANE {Number}\nFREE  Hits {_hits}";
 
             if (text != _shownText)

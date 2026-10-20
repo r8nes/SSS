@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Mirror;
+using ShooterShop.Upgrades;
 using UnityEngine;
 using VContainer.Unity;
 using Random = UnityEngine.Random;
@@ -11,15 +12,17 @@ namespace ShooterShop.Range
     {
         private readonly RangeConfig _config;
         private readonly RangeLayout _layout;
+        private readonly IUnlocks _unlocks;
         private readonly Dictionary<ShootingLane, IRangeShooter> _shooters = new();
         private readonly Dictionary<ShootingLane, float> _nextShotTime = new();
 
         public event Action<ShootingLane> SessionFinished;
 
-        public ShootingRange(RangeConfig config, RangeLayout layout)
+        public ShootingRange(RangeConfig config, RangeLayout layout, IUnlocks unlocks)
         {
             _config = config;
             _layout = layout;
+            _unlocks = unlocks;
         }
 
         public void Start()
@@ -39,7 +42,7 @@ namespace ShooterShop.Range
         {
             foreach (var candidate in _layout.Lanes)
             {
-                if (!candidate.IsAvailable)
+                if (!candidate.IsAvailable || !_unlocks.IsUnlocked(candidate.RequiredUpgrade))
                     continue;
 
                 candidate.ServerReserve();
@@ -68,7 +71,7 @@ namespace ShooterShop.Range
         {
             foreach (var lane in _layout.Lanes)
             {
-                lane.TickDisplay();
+                lane.TickDisplay(_unlocks.IsUnlocked(lane.RequiredUpgrade));
 
                 if (NetworkServer.active)
                     TickServer(lane);

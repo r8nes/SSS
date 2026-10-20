@@ -10,6 +10,7 @@ using ShooterShop.Purchasing;
 using ShooterShop.Range;
 using ShooterShop.Sales;
 using ShooterShop.Storage;
+using ShooterShop.Upgrades;
 using Sirenix.OdinInspector;
 using UnityEngine;
 using VContainer;
@@ -39,6 +40,12 @@ namespace ShooterShop.Bootstrap
 
         [BoxGroup("Network"), Required, SceneObjectsOnly]
         [SerializeField] private DayNetworkState _dayNetworkState;
+
+        [BoxGroup("Network"), Required, SceneObjectsOnly]
+        [SerializeField] private UpgradeNetworkState _upgradeNetworkState;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private UpgradeCatalog _upgradeCatalog;
 
         [BoxGroup("Purchasing"), Required, SceneObjectsOnly]
         [SerializeField] private PurchaseTerminal _purchaseTerminal;
@@ -77,11 +84,15 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_dayNetworkState).AsSelf().As<IDayState, IDayStatistics, IDayCommands>();
             builder.RegisterEntryPoint<DayCycle>();
 
+            builder.RegisterInstance(_upgradeCatalog);
+            builder.RegisterComponent(_upgradeNetworkState).As<IUnlocks, IUpgradeCommands>();
+
             builder.Register<AkilaPlayerInputLock>(Lifetime.Singleton).AsImplementedInterfaces();
 
             builder.RegisterComponent(_purchaseTerminal);
             builder.RegisterComponent(_purchaseTerminalView);
             builder.RegisterEntryPoint<PurchaseTerminalPresenter>();
+            builder.RegisterEntryPoint<UpgradesPresenter>();
 
             builder.RegisterInstance(_rangeConfig);
             builder.RegisterComponent(_rangeLayout);

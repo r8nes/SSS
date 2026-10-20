@@ -5,6 +5,7 @@ using ShooterShop.Customers;
 using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Storage;
+using ShooterShop.Upgrades;
 using VContainer;
 
 namespace ShooterShop.Network
@@ -27,6 +28,7 @@ namespace ShooterShop.Network
         private ProductCatalog _catalog;
         private ICustomerService _customers;
         private IDayStatistics _statistics;
+        private IUnlocks _unlocks;
 
         public event Action MoneyChanged;
         public event Action StorageChanged;
@@ -38,8 +40,9 @@ namespace ShooterShop.Network
         public int FreeSpace => _capacity - _usedSpace;
 
         [Inject]
-        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics)
+        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics, IUnlocks unlocks)
         {
+            _unlocks = unlocks;
             _customers = customers;
             _statistics = statistics;
             _wallet = wallet;
@@ -85,12 +88,14 @@ namespace ShooterShop.Network
 
             _wallet.BalanceChanged += OnWalletChanged;
             _warehouse.StockChanged += OnWarehouseChanged;
+            _warehouse.CapacityChanged += OnCapacityChanged;
         }
 
         public override void OnStopServer()
         {
             _wallet.BalanceChanged -= OnWalletChanged;
             _warehouse.StockChanged -= OnWarehouseChanged;
+            _warehouse.CapacityChanged -= OnCapacityChanged;
         }
 
         public override void OnStartClient()
@@ -127,7 +132,7 @@ namespace ShooterShop.Network
         [Server]
         private void ServerPurchase(ProductConfig product, int amount)
         {
-            if (!_warehouse.CanStore(product, amount))
+            if (!_unlocks.IsUnlocked(product.RequiredUpgrade) || !_warehouse.CanStore(product, amount))
                 return;
 
             var cost = product.BuyPrice * amount;
@@ -140,6 +145,8 @@ namespace ShooterShop.Network
         }
 
         private void OnWalletChanged(int balance) => _money = balance;
+
+        private void OnCapacityChanged() => _capacity = _warehouse.Capacity;
 
         private void OnWarehouseChanged(ProductConfig product, int amount)
         {

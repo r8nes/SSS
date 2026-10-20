@@ -48,6 +48,13 @@ namespace ShooterShop.Purchasing
 
         public void SetStock(string stock) => _stock.text = stock;
 
+        public void SetLocked(bool isLocked)
+        {
+            _buyButton.interactable = !isLocked;
+            _increaseButton.interactable = !isLocked;
+            _decreaseButton.interactable = !isLocked;
+        }
+
         public void SetAmount(int amount, string total)
         {
             _amount.text = amount.ToString();

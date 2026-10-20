@@ -9,6 +9,7 @@ using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Range;
 using ShooterShop.Storage;
+using ShooterShop.Upgrades;
 using UnityEngine;
 using VContainer;
 using VContainer.Unity;
@@ -27,6 +28,7 @@ namespace ShooterShop.Customers
         private readonly IShootingRange _range;
         private readonly IDayState _day;
         private readonly IDayStatistics _statistics;
+        private readonly IUnlocks _unlocks;
         private readonly IObjectResolver _resolver;
         private readonly List<Customer> _customers = new();
         private readonly Dictionary<Customer, ShootingLane> _lanes = new();
@@ -42,6 +44,7 @@ namespace ShooterShop.Customers
             IShootingRange range,
             IDayState day,
             IDayStatistics statistics,
+            IUnlocks unlocks,
             IObjectResolver resolver)
         {
             _config = config;
@@ -53,6 +56,7 @@ namespace ShooterShop.Customers
             _range = range;
             _day = day;
             _statistics = statistics;
+            _unlocks = unlocks;
             _resolver = resolver;
             _slots = new Customer[layout.CounterSlots.Count];
         }
@@ -219,7 +223,7 @@ namespace ShooterShop.Customers
 
         private CustomerRequest PickRequest(Customer customer)
         {
-            var ammo = _catalog.Products.Where(p => p.IsAmmo).ToList();
+            var ammo = _catalog.Products.Where(p => p.IsAmmo && _unlocks.IsUnlocked(p.RequiredUpgrade)).ToList();
 
             if (ammo.Count > 0 && Random.value < _rangeConfig.VisitorChance && _range.TryReserveLane(out var lane))
             {
@@ -239,8 +243,9 @@ namespace ShooterShop.Customers
             return new CustomerRequest(shopProduct, Random.Range(1, maxAmount + 1));
         }
 
-        private ProductConfig PickProduct(IReadOnlyList<ProductConfig> pool)
+        private ProductConfig PickProduct(IReadOnlyList<ProductConfig> candidates)
         {
+            var pool = candidates.Where(p => _unlocks.IsUnlocked(p.RequiredUpgrade)).ToList();
             var inStock = pool.Where(p => _warehouse.GetAmount(p) > 0).ToList();
             var source = inStock.Count > 0 && Random.value < _config.InStockRequestChance ? inStock : pool;
             return source[Random.Range(0, source.Count)];

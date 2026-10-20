@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using ShooterShop.Catalog;
 using ShooterShop.Input;
 using ShooterShop.Network;
+using ShooterShop.Upgrades;
 using UnityEngine.InputSystem;
 using VContainer.Unity;
 
@@ -19,6 +20,7 @@ namespace ShooterShop.Purchasing
         private readonly IShopState _state;
         private readonly IShopCommands _commands;
         private readonly IPlayerInputLock _inputLock;
+        private readonly IUnlocks _unlocks;
         private readonly Dictionary<ProductConfig, ProductCardView> _cards = new();
         private readonly Dictionary<ProductConfig, int> _amounts = new();
 
@@ -28,8 +30,10 @@ namespace ShooterShop.Purchasing
             ProductCatalog catalog,
             IShopState state,
             IShopCommands commands,
-            IPlayerInputLock inputLock)
+            IPlayerInputLock inputLock,
+            IUnlocks unlocks)
         {
+            _unlocks = unlocks;
             _terminal = terminal;
             _view = view;
             _catalog = catalog;
@@ -45,6 +49,9 @@ namespace ShooterShop.Purchasing
 
             _terminal.Interacted += Toggle;
             _view.CloseButton.onClick.AddListener(Close);
+            _view.StockTabButton.onClick.AddListener(ShowStock);
+            _view.UpgradesTabButton.onClick.AddListener(ShowUpgrades);
+            _unlocks.Changed += RefreshAllStock;
             _state.MoneyChanged += RefreshStatus;
             _state.StorageChanged += RefreshStatus;
             _state.StockChanged += RefreshStock;
@@ -62,6 +69,9 @@ namespace ShooterShop.Purchasing
         {
             _terminal.Interacted -= Toggle;
             _view.CloseButton.onClick.RemoveListener(Close);
+            _view.StockTabButton.onClick.RemoveListener(ShowStock);
+            _view.UpgradesTabButton.onClick.RemoveListener(ShowUpgrades);
+            _unlocks.Changed -= RefreshAllStock;
             _state.MoneyChanged -= RefreshStatus;
             _state.StorageChanged -= RefreshStatus;
             _state.StockChanged -= RefreshStock;
@@ -81,10 +91,8 @@ namespace ShooterShop.Purchasing
             _inputLock.Acquire(this);
             _view.SetMessage(string.Empty);
             RefreshStatus();
-
-            foreach (var product in _catalog.Products)
-                RefreshStock(product);
-
+            RefreshAllStock();
+            _view.ShowStockTab(true);
             _view.SetOpen(true);
         }
 
@@ -92,6 +100,16 @@ namespace ShooterShop.Purchasing
         {
             _view.SetOpen(false);
             _inputLock.Release(this);
+        }
+
+        private void ShowStock() => _view.ShowStockTab(true);
+
+        private void ShowUpgrades() => _view.ShowStockTab(false);
+
+        private void RefreshAllStock()
+        {
+            foreach (var product in _catalog.Products)
+                RefreshStock(product);
         }
 
         private void CreateCard(ProductConfig product)
@@ -118,7 +136,9 @@ namespace ShooterShop.Purchasing
             var amount = _amounts[product];
             var cost = product.BuyPrice * amount;
 
-            if (_state.Money < cost)
+            if (!_unlocks.IsUnlocked(product.RequiredUpgrade))
+                _view.SetMessage($"Requires {product.RequiredUpgrade.DisplayName}");
+            else if (_state.Money < cost)
                 _view.SetMessage($"Not enough money: need {FormatMoney(cost)}");
             else if (_state.FreeSpace < product.StorageSize * amount)
                 _view.SetMessage($"Not enough storage: need {product.StorageSize * amount} slots");
@@ -137,8 +157,12 @@ namespace ShooterShop.Purchasing
 
         private void RefreshStock(ProductConfig product)
         {
-            if (_cards.TryGetValue(product, out var card))
-                card.SetStock($"In stock: {_state.GetStock(product)}");
+            if (!_cards.TryGetValue(product, out var card))
+                return;
+
+            var isLocked = !_unlocks.IsUnlocked(product.RequiredUpgrade);
+            card.SetLocked(isLocked);
+            card.SetStock(isLocked ? $"Requires {product.RequiredUpgrade.DisplayName}" : $"In stock: {_state.GetStock(product)}");
         }
 
         private void RefreshAmount(ProductConfig product)

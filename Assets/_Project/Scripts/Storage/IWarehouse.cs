@@ -7,6 +7,7 @@ namespace ShooterShop.Storage
     public interface IWarehouse
     {
         event Action<ProductConfig, int> StockChanged;
+        event Action CapacityChanged;
         int Capacity { get; }
         int UsedSpace { get; }
         int FreeSpace { get; }
@@ -15,5 +16,6 @@ namespace ShooterShop.Storage
         bool CanStore(ProductConfig product, int amount);
         bool TryAdd(ProductConfig product, int amount);
         bool TryRemove(ProductConfig product, int amount);
+        void IncreaseCapacity(int amount);
     }
 }
