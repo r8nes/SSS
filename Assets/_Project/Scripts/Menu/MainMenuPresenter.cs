@@ -1,4 +1,6 @@
 using System;
+using Cysharp.Threading.Tasks;
+using ShooterShop.Loading;
 using ShooterShop.Network;
 using VContainer.Unity;
 
@@ -11,12 +13,14 @@ namespace ShooterShop.Menu
         private readonly MainMenuView _view;
         private readonly INetworkSession _session;
         private readonly ILanDiscovery _discovery;
+        private readonly ILoadingScreen _loadingScreen;
 
-        public MainMenuPresenter(MainMenuView view, INetworkSession session, ILanDiscovery discovery)
+        public MainMenuPresenter(MainMenuView view, INetworkSession session, ILanDiscovery discovery, ILoadingScreen loadingScreen)
         {
             _view = view;
             _session = session;
             _discovery = discovery;
+            _loadingScreen = loadingScreen;
         }
 
         public void Start()
@@ -25,10 +29,9 @@ namespace ShooterShop.Menu
             _view.HostButton.onClick.AddListener(OnHostClicked);
             _view.JoinButton.onClick.AddListener(OnJoinClicked);
             _discovery.ServersChanged += RefreshServers;
+            _session.Stopped += OnSessionStopped;
 
-            _view.SetInteractable(true);
-            _discovery.StartSearch();
-            RefreshServers();
+            ResetMenu();
         }
 
         public void Dispose()
@@ -37,24 +40,35 @@ namespace ShooterShop.Menu
             _view.HostButton.onClick.RemoveListener(OnHostClicked);
             _view.JoinButton.onClick.RemoveListener(OnJoinClicked);
             _discovery.ServersChanged -= RefreshServers;
+            _session.Stopped -= OnSessionStopped;
         }
 
-        private void OnSoloClicked() => Launch(_session.StartSolo);
+        private void OnSoloClicked() => Launch(_session.StartSoloAsync);
 
-        private void OnHostClicked() => Launch(_session.StartHost);
+        private void OnHostClicked() => Launch(_session.StartHostAsync);
 
         private void OnJoinClicked()
         {
             var address = string.IsNullOrEmpty(_view.Address) ? DefaultAddress : _view.Address;
-            Launch(() => _session.Join(address));
+            Launch(() => _session.JoinAsync(address));
         }
 
-        private void OnServerClicked(DiscoveredServer server) => Launch(() => _session.Join(server.Uri));
+        private void OnServerClicked(DiscoveredServer server) => Launch(() => _session.JoinAsync(server.Uri));
 
-        private void Launch(Action start)
+        private void Launch(Func<UniTask> start)
         {
             _view.SetInteractable(false);
-            start();
+            start().Forget();
+        }
+
+        private void OnSessionStopped() => ResetMenu();
+
+        private void ResetMenu()
+        {
+            _loadingScreen.Hide();
+            _view.SetInteractable(true);
+            _discovery.StartSearch();
+            RefreshServers();
         }
 
         private void RefreshServers()

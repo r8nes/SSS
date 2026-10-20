@@ -1,8 +1,10 @@
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using VContainer.Unity;
 
 namespace ShooterShop.Network
 {
-    public sealed class OfflineSessionStarter : IStartable
+    public sealed class OfflineSessionStarter : IAsyncStartable
     {
         private readonly INetworkSession _session;
 
@@ -11,10 +13,10 @@ namespace ShooterShop.Network
             _session = session;
         }
 
-        public void Start()
+        public async UniTask StartAsync(CancellationToken cancellation)
         {
             if (!_session.IsActive)
-                _session.StartSolo();
+                await _session.StartSoloAsync();
         }
     }
 }

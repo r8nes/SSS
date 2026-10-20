@@ -46,7 +46,8 @@ VContainer (`jp.hadashikick.vcontainer` 1.19.0) and UniTask (`com.cysharp.unitas
 
 The game is always a Mirror session: **solo = host with `NetworkServer.listen = false`**, co-op = open host plus LAN discovery / direct IP (KCP, port 7777). Steam is planned later and only swaps the transport.
 
-- **`ProjectLifetimeScope`** (`Assets/_Project/Prefabs/ProjectLifetimeScope.prefab`) is the VContainer root scope, set in `Configs/VContainerSettings.asset` (preloaded asset), and it lives for the whole app. Its child `NetworkManager` (variant of Akila's, `dontDestroyOnLoad = false`, offline = `Main Menu`, online = `Demo`, player = `Player Network`) and `NetworkDiscovery` are registered here together with `INetworkSession` and `ILanDiscovery`.
+- **`ProjectLifetimeScope`** (`Assets/_Project/Prefabs/ProjectLifetimeScope.prefab`) is the VContainer root scope, set in `Configs/VContainerSettings.asset` (preloaded asset), and it lives for the whole app. Its child `ShopNetworkManager` (unpacked from Akila's Network Manager; raises `ClientStopped`, `dontDestroyOnLoad = false`, offline = `Main Menu`, online = `Demo`, player = `Player Network`) and `NetworkDiscovery` are registered here together with `INetworkSession` and `ILanDiscovery`.
+- **Loading screen** = Akila's `Loading` scene used as an overlay. On first `ILoadingScreen.ShowAsync()` it is loaded additively and its `LoadingLifetimeScope` attaches the Akila `LoadingScreen` (DDOL) to `SceneLoadingScreen`. `NetworkSession` shows it before every solo / host / join / leave. `GameLoadingCloser` hides it once the local player has spawned, and `MainMenuPresenter` hides it on start or when the session stops. The hide waits for Akila's `postLoadDelay`.
 - **`MenuLifetimeScope`** (`Main Menu` scene) runs the MVP menu `MainMenuView` / `MainMenuPresenter`: Solo, Host, Join by IP and a list of LAN servers.
 - **`GameLifetimeScope`** (`Demo` scene) holds configs, `Wallet` / `Warehouse` and `ShopNetworkState`. `OfflineSessionStarter` starts solo when you press Play straight from `Demo`.
 - **Shop state is server-authoritative.** `IWallet` / `IWarehouse` are the server-side model and only the host changes them. Gameplay and UI on every peer read state through **`IShopState`** (SyncVar / SyncDictionary keyed by `ProductCatalog` index) and change it through **`IShopCommands`** (direct call on the host, `[Command]` on clients).
@@ -60,3 +61,4 @@ Vendor patches: Mirror `NetworkManager.StopServer/StopClient` only move a **root
 
 - Always keep `.meta` files paired with their assets (create/move/delete them together) — GUIDs back all scene/prefab references.
 - `Library/`, `Temp/`, `Logs/`, `UserSettings/` are generated; don't edit.
+- Play Mode tests driven through the Unity CLI need **Run In Background** (or auto-tick). Otherwise an unfocused Editor barely ticks frames and UniTask awaits and scene loads stall. The project keeps Run In Background off.

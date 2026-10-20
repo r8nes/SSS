@@ -1,69 +1,88 @@
 using System;
+using Cysharp.Threading.Tasks;
 using Mirror;
+using ShooterShop.Loading;
 
 namespace ShooterShop.Network
 {
-    public sealed class NetworkSession : INetworkSession
+    public sealed class NetworkSession : INetworkSession, IDisposable
     {
-        private readonly NetworkManager _manager;
+        private readonly ShopNetworkManager _manager;
         private readonly ILanDiscovery _discovery;
+        private readonly ILoadingScreen _loadingScreen;
+
+        public event Action Stopped;
 
         public SessionMode Mode { get; private set; }
         public bool IsActive => _manager.isNetworkActive;
 
-        public NetworkSession(NetworkManager manager, ILanDiscovery discovery)
+        public NetworkSession(ShopNetworkManager manager, ILanDiscovery discovery, ILoadingScreen loadingScreen)
         {
             _manager = manager;
             _discovery = discovery;
+            _loadingScreen = loadingScreen;
+            _manager.ClientStopped += OnClientStopped;
         }
 
-        public void StartSolo() => StartHosting(SessionMode.Solo, false);
+        public UniTask StartSoloAsync() => StartHostingAsync(SessionMode.Solo, false);
 
-        public void StartHost()
+        public async UniTask StartHostAsync()
         {
-            StartHosting(SessionMode.Host, true);
+            await StartHostingAsync(SessionMode.Host, true);
             _discovery.Advertise();
         }
 
-        public void Join(Uri uri)
+        public async UniTask JoinAsync(Uri uri)
         {
-            PrepareStart();
-            _manager.StartClient(uri);
+            await PrepareStartAsync();
             Mode = SessionMode.Client;
+            _manager.StartClient(uri);
         }
 
-        public void Join(string address)
+        public async UniTask JoinAsync(string address)
         {
-            PrepareStart();
+            await PrepareStartAsync();
+            Mode = SessionMode.Client;
             _manager.networkAddress = address;
             _manager.StartClient();
-            Mode = SessionMode.Client;
         }
 
-        public void Leave()
+        public async UniTask LeaveAsync()
         {
+            if (!IsActive)
+                return;
+
+            await _loadingScreen.ShowAsync();
+
             if (NetworkServer.active)
                 _manager.StopHost();
-            else if (NetworkClient.active)
+            else
                 _manager.StopClient();
-
-            Mode = SessionMode.None;
         }
 
-        private void StartHosting(SessionMode mode, bool acceptConnections)
+        public void Dispose() => _manager.ClientStopped -= OnClientStopped;
+
+        private async UniTask StartHostingAsync(SessionMode mode, bool acceptConnections)
         {
-            PrepareStart();
+            await PrepareStartAsync();
+            Mode = mode;
             NetworkServer.listen = acceptConnections;
             _manager.StartHost();
-            Mode = mode;
         }
 
-        private void PrepareStart()
+        private async UniTask PrepareStartAsync()
         {
             if (IsActive)
                 throw new InvalidOperationException($"Network session is already running in {Mode} mode");
 
             _discovery.StopSearch();
+            await _loadingScreen.ShowAsync();
+        }
+
+        private void OnClientStopped()
+        {
+            Mode = SessionMode.None;
+            Stopped?.Invoke();
         }
     }
 }

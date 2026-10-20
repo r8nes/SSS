@@ -1,5 +1,6 @@
 using ShooterShop.Catalog;
 using ShooterShop.Economy;
+using ShooterShop.Loading;
 using ShooterShop.Network;
 using ShooterShop.Storage;
 using Sirenix.OdinInspector;
@@ -30,6 +31,7 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_shopNetworkState).As<IShopState, IShopCommands>();
 
             builder.RegisterEntryPoint<OfflineSessionStarter>();
+            builder.RegisterEntryPoint<GameLoadingCloser>();
         }
     }
 }
