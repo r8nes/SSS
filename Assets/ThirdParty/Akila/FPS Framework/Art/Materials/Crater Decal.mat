@@ -25,6 +25,7 @@ Material:
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords:
+  - _EMISSION
   - _ENVIRONMENTREFLECTIONS_OFF
   - _SURFACE_TYPE_TRANSPARENT
   m_InvalidKeywords:
@@ -40,6 +41,7 @@ Material:
   - SHADOWCASTER
   - DepthOnly
   - MOTIONVECTORS
+  - TransparentDepthPrepass
   m_LockedProperties: 
   m_SavedProperties:
     serializedVersion: 3
@@ -110,12 +112,14 @@ Material:
     - _BumpScale: 1
     - _ClearCoatMask: 0
     - _ClearCoatSmoothness: 0
+    - _ContactShadowReceiverMode: 0
     - _Cull: 2
     - _Cutoff: 0.5
     - _DetailAlbedoMapScale: 1
     - _DetailNormalMapScale: 1
     - _DstBlend: 10
     - _DstBlendAlpha: 10
+    - _DstBlendRefraction: 10
     - _EnvironmentReflections: 0
     - _GlossMapScale: 0
     - _Glossiness: 0
@@ -126,12 +130,15 @@ Material:
     - _Parallax: 0.005
     - _QueueOffset: 0
     - _ReceiveShadows: 1
+    - _ScreenSpaceReflections: 1
+    - _ScreenSpaceReflectionsContributeTransparent: 1
     - _Smoothness: 0
     - _SmoothnessTextureChannel: 0
     - _SpecularHighlights: 1
     - _SrcBlend: 5
     - _SrcBlendAlpha: 1
     - _Surface: 1
+    - _TransparentDepthPrepassEnable: 0
     - _UVSec: 0
     - _WorkflowMode: 1
     - _XRMotionVectorsPass: 1
