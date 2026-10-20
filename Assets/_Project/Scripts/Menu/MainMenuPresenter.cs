@@ -2,6 +2,7 @@ using System;
 using Cysharp.Threading.Tasks;
 using ShooterShop.Loading;
 using ShooterShop.Network;
+using ShooterShop.Saves;
 using VContainer.Unity;
 
 namespace ShooterShop.Menu
@@ -14,13 +15,15 @@ namespace ShooterShop.Menu
         private readonly INetworkSession _session;
         private readonly ILanDiscovery _discovery;
         private readonly ILoadingScreen _loadingScreen;
+        private readonly ISaveStorage _saveStorage;
 
-        public MainMenuPresenter(MainMenuView view, INetworkSession session, ILanDiscovery discovery, ILoadingScreen loadingScreen)
+        public MainMenuPresenter(MainMenuView view, INetworkSession session, ILanDiscovery discovery, ILoadingScreen loadingScreen, ISaveStorage saveStorage)
         {
             _view = view;
             _session = session;
             _discovery = discovery;
             _loadingScreen = loadingScreen;
+            _saveStorage = saveStorage;
         }
 
         public void Start()
@@ -28,6 +31,7 @@ namespace ShooterShop.Menu
             _view.SoloButton.onClick.AddListener(OnSoloClicked);
             _view.HostButton.onClick.AddListener(OnHostClicked);
             _view.JoinButton.onClick.AddListener(OnJoinClicked);
+            _view.NewGameButton.onClick.AddListener(OnNewGameClicked);
             _discovery.ServersChanged += RefreshServers;
             _session.Stopped += OnSessionStopped;
 
@@ -39,6 +43,7 @@ namespace ShooterShop.Menu
             _view.SoloButton.onClick.RemoveListener(OnSoloClicked);
             _view.HostButton.onClick.RemoveListener(OnHostClicked);
             _view.JoinButton.onClick.RemoveListener(OnJoinClicked);
+            _view.NewGameButton.onClick.RemoveListener(OnNewGameClicked);
             _discovery.ServersChanged -= RefreshServers;
             _session.Stopped -= OnSessionStopped;
         }
@@ -61,12 +66,25 @@ namespace ShooterShop.Menu
             start().Forget();
         }
 
+        private void OnNewGameClicked()
+        {
+            _saveStorage.Delete();
+            RefreshSaveInfo();
+        }
+
         private void OnSessionStopped() => ResetMenu();
+
+        private void RefreshSaveInfo()
+        {
+            var hasSave = _saveStorage.TryLoad(out var save);
+            _view.SetSaveInfo(hasSave ? $"Continue: Day {save.CompletedDays + 1}  ${save.Money:N0}" : "New game", hasSave);
+        }
 
         private void ResetMenu()
         {
             _loadingScreen.Hide();
             _view.SetInteractable(true);
+            RefreshSaveInfo();
             _discovery.StartSearch();
             RefreshServers();
         }

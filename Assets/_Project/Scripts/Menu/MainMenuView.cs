@@ -14,6 +14,12 @@ namespace ShooterShop.Menu
         [BoxGroup("Session"), Required]
         [SerializeField] private InteractiveButton _hostButton;
 
+        [BoxGroup("Session"), Required]
+        [SerializeField] private InteractiveButton _newGameButton;
+
+        [BoxGroup("Session"), Required]
+        [SerializeField] private TMP_Text _saveInfo;
+
         [BoxGroup("Join"), Required]
         [SerializeField] private TMP_InputField _addressInput;
 
@@ -34,7 +40,14 @@ namespace ShooterShop.Menu
         public InteractiveButton SoloButton => _soloButton;
         public InteractiveButton HostButton => _hostButton;
         public InteractiveButton JoinButton => _joinButton;
+        public InteractiveButton NewGameButton => _newGameButton;
         public string Address => _addressInput.text.Trim();
+
+        public void SetSaveInfo(string info, bool hasSave)
+        {
+            _saveInfo.text = info;
+            _newGameButton.gameObject.SetActive(hasSave);
+        }
 
         public ServerEntryView AddServer(string label)
         {
@@ -59,6 +72,7 @@ namespace ShooterShop.Menu
             _soloButton.interactable = interactable;
             _hostButton.interactable = interactable;
             _joinButton.interactable = interactable;
+            _newGameButton.interactable = interactable;
             _addressInput.interactable = interactable;
 
             foreach (var entry in _entries)

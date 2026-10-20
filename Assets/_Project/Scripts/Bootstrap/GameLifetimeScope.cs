@@ -9,6 +9,7 @@ using ShooterShop.Network;
 using ShooterShop.Purchasing;
 using ShooterShop.Range;
 using ShooterShop.Sales;
+using ShooterShop.Saves;
 using ShooterShop.Storage;
 using ShooterShop.Upgrades;
 using Sirenix.OdinInspector;
@@ -75,6 +76,9 @@ namespace ShooterShop.Bootstrap
         {
             builder.RegisterInstance(_economyConfig);
             builder.RegisterInstance(_productCatalog);
+
+            builder.Register<StartingState>(Lifetime.Singleton);
+            builder.RegisterEntryPoint<ProgressSaver>();
 
             builder.Register<Wallet>(Lifetime.Singleton).As<IWallet>();
             builder.Register<Warehouse>(Lifetime.Singleton).As<IWarehouse>();

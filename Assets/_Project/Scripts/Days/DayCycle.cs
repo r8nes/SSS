@@ -3,6 +3,7 @@ using System.Threading;
 using Cysharp.Threading.Tasks;
 using Mirror;
 using ShooterShop.Customers;
+using ShooterShop.Saves;
 using VContainer.Unity;
 
 namespace ShooterShop.Days
@@ -12,12 +13,14 @@ namespace ShooterShop.Days
         private readonly DayConfig _config;
         private readonly DayNetworkState _state;
         private readonly ICustomerService _customers;
+        private readonly StartingState _startingState;
 
-        public DayCycle(DayConfig config, DayNetworkState state, ICustomerService customers)
+        public DayCycle(DayConfig config, DayNetworkState state, ICustomerService customers, StartingState startingState)
         {
             _config = config;
             _state = state;
             _customers = customers;
+            _startingState = startingState;
         }
 
         public async UniTask StartAsync(CancellationToken cancellation)
@@ -26,7 +29,7 @@ namespace ShooterShop.Days
             await UniTask.WaitUntil(() => NetworkServer.active && _state.isServer, cancellationToken: cancellation);
 
             if (_state.Day == 0)
-                OpenDay(1);
+                OpenDay(_startingState.CompletedDays + 1);
         }
 
         public void Dispose() => _state.NextDayRequested -= OnNextDayRequested;

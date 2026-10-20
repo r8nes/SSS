@@ -1,4 +1,5 @@
 using System;
+using ShooterShop.Saves;
 
 namespace ShooterShop.Economy
 {
@@ -8,9 +9,9 @@ namespace ShooterShop.Economy
 
         public int Balance { get; private set; }
 
-        public Wallet(EconomyConfig config)
+        public Wallet(StartingState state)
         {
-            Balance = config.StartingMoney;
+            Balance = state.Money;
         }
 
         public bool CanAfford(int amount) => amount >= 0 && Balance >= amount;

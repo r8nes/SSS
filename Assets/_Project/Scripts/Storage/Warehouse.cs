@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using ShooterShop.Catalog;
-using ShooterShop.Economy;
+using ShooterShop.Saves;
 
 namespace ShooterShop.Storage
 {
@@ -17,12 +17,12 @@ namespace ShooterShop.Storage
         public int FreeSpace => Capacity - UsedSpace;
         public IReadOnlyDictionary<ProductConfig, int> Stock => _stock;
 
-        public Warehouse(EconomyConfig config)
+        public Warehouse(StartingState state)
         {
-            Capacity = config.WarehouseCapacity;
+            Capacity = state.Capacity;
 
-            foreach (var entry in config.StartingStock)
-                TryAdd(entry.Product, entry.Amount);
+            foreach (var (product, amount) in state.Stock)
+                TryAdd(product, amount);
         }
 
         public int GetAmount(ProductConfig product) =>

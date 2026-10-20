@@ -2,6 +2,7 @@ using Mirror;
 using Mirror.Discovery;
 using ShooterShop.Loading;
 using ShooterShop.Network;
+using ShooterShop.Saves;
 using Sirenix.OdinInspector;
 using UnityEngine;
 using VContainer;
@@ -20,6 +21,9 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Loading"), Required]
         [SerializeField] private string _loadingSceneName = "Loading";
 
+        [BoxGroup("Saves"), Required]
+        [SerializeField] private string _saveFileName = "save.json";
+
         protected override void Configure(IContainerBuilder builder)
         {
             builder.RegisterComponent(_networkManager).As<NetworkManager>().AsSelf();
@@ -28,6 +32,10 @@ namespace ShooterShop.Bootstrap
             builder.Register<SceneLoadingScreen>(Lifetime.Singleton)
                 .AsImplementedInterfaces()
                 .WithParameter("sceneName", _loadingSceneName);
+
+            builder.Register<JsonSaveStorage>(Lifetime.Singleton)
+                .As<ISaveStorage>()
+                .WithParameter("fileName", _saveFileName);
 
             builder.Register<LanDiscovery>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.Register<NetworkSession>(Lifetime.Singleton).AsImplementedInterfaces();
