@@ -80,7 +80,8 @@ namespace Akila.FPSFrameworkPro
 
             if (isLocalPlayer)
             {
-                GameModer.Instance.localPlayer = TargetActor;
+                if (GameModer.Instance != null)
+                    GameModer.Instance.localPlayer = TargetActor;
 
                 if(teamID == 0)
                 {
@@ -96,7 +97,8 @@ namespace Akila.FPSFrameworkPro
                 }
             }
 
-            GameModer.Instance.RefreshPlayers();
+            if (GameModer.Instance != null)
+                GameModer.Instance.RefreshPlayers();
 
             //TODO: Fix player card errors
             /*

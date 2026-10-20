@@ -585,6 +585,7 @@ namespace Mirror
             // IMPORTANT: .gameObject can be null if StopClient is called from
             //            OnApplicationQuit or from tests!
             if (gameObject != null
+                && transform.parent == null
                 && gameObject.scene.name == "DontDestroyOnLoad"
                 && !string.IsNullOrWhiteSpace(offlineScene)
                 && SceneManager.GetActiveScene().path != offlineScene)
@@ -1278,6 +1279,7 @@ namespace Mirror
             // IMPORTANT: .gameObject can be null if StopClient is called from
             //            OnApplicationQuit or from tests!
             if (gameObject != null
+                && transform.parent == null
                 && gameObject.scene.name == "DontDestroyOnLoad"
                 && !string.IsNullOrWhiteSpace(offlineScene)
                 && SceneManager.GetActiveScene().path != offlineScene)

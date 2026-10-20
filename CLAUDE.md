@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-"Shooter Shop Simulator" — a Unity **6000.3.12f1** (Unity 6.3) project using **URP 17.3** and the new **Input System** (`Assets/InputSystem_Actions.inputactions`). Early stage: the only game scene is `Assets/Scenes/SampleScene.unity`; there is no game-specific code yet outside third-party assets. Not a git repository.
+"Shooter Shop Simulator" — a shooting-range / gun-shop management sim (buy stock from suppliers, keep a warehouse, sell guns and ammo, run a shooting range), built on Akila FPS Framework. Current goal: an MVP with ~30 minutes of gameplay. Unity **6000.3.12f1** (Unity 6.3) project using **URP 17.3** and the new **Input System** (`Assets/InputSystem_Actions.inputactions`). Game code lives in `Assets/_Project` (`Scripts/` = `ShooterShop.Runtime` asmdef, `Configs/` = SO assets, `Editor/` = `ShooterShop.Editor`).
 
 ## Building / running
 
@@ -17,12 +17,12 @@ There are no CLI build scripts. Work happens in the Unity Editor. The `.sln` / `
 - `Assets/ThirdParty/Akila/FPS Framework/` — **primary framework we build on**: third-party **Akila FPS Framework** (assembly `Akila.FPSFramework`, ~240 scripts): character controller, weapons, animation system (see `PAExample` script for how it works), audio, input, settings management, UI. Its own readme warns: **do not use the default scenes/prefabs directly — duplicate them first**, since the framework's files may change on update.
 - `Assets/ThirdParty/Akila/FPS Framework Pro/` — Pro add-on: **Mirror multiplayer** layer (`Network*` wrappers over core classes, `FPSFNetworkManager`, game modes). No asmdef, so it compiles into `Assembly-CSharp`.
 - `Assets/Mirror/` — Mirror networking (used by Akila Pro), including many example scenes.
-- Scenes: `Assets/Scenes/SampleScene.unity` (empty template), Akila `Main Menu` / `Loading` / `Demo` and Pro `Multiplayer Demo` — all in Build Settings.
+- **Scenes:** Akila `Main Menu` (entry point, menu) and **`Demo` (main game scene)**. `Loading` and Pro `Multiplayer Demo` are Akila samples.
 - `Packages/com.rimi-kun.aetheria/` — embedded local package (assemblies `Aetheria.Runtime` / `Aetheria.Editor`): water (buoyancy, GPU) and volumetric fog rendering.
 - `Packages/com.unity.render-pipelines.*` — **embedded (locally modified) copies** of URP/Core. Avoid changing them unless intentional.
 - `Assets/TutorialInfo`, `Assets/Readme.asset` — Unity template boilerplate, safe to ignore.
 
-When adding game code, keep it outside `Assets/ThirdParty` (vendor code) so framework updates don't overwrite it. Code in `Assembly-CSharp` can reference `Akila.FPSFramework`; an asmdef for new game code must list `Akila.FPSFramework` explicitly.
+**Akila is a fork.** We modify its scripts directly to fit our architecture (VContainer, UniTask, no lifecycle callbacks) and do not take upstream updates. New game-specific code goes in `Assets/_Project`. Code in `Assembly-CSharp` can reference `Akila.FPSFramework`; an asmdef for new game code must list `Akila.FPSFramework` explicitly.
 
 ## Architecture rules (mandatory for all game code)
 
@@ -41,6 +41,20 @@ When adding game code, keep it outside `Assets/ThirdParty` (vendor code) so fram
 13. **DRY.** Build reusable components and flexible abstractions instead of duplicating logic.
 
 VContainer (`jp.hadashikick.vcontainer` 1.19.0) and UniTask (`com.cysharp.unitask` 2.5.11) are installed as git-URL packages in `Packages/manifest.json`. Game asmdefs must reference `VContainer` and `UniTask`.
+
+## Scopes and networking
+
+The game is always a Mirror session: **solo = host with `NetworkServer.listen = false`**, co-op = open host plus LAN discovery / direct IP (KCP, port 7777). Steam is planned later and only swaps the transport.
+
+- **`ProjectLifetimeScope`** (`Assets/_Project/Prefabs/ProjectLifetimeScope.prefab`) is the VContainer root scope, set in `Configs/VContainerSettings.asset` (preloaded asset), and it lives for the whole app. Its child `NetworkManager` (variant of Akila's, `dontDestroyOnLoad = false`, offline = `Main Menu`, online = `Demo`, player = `Player Network`) and `NetworkDiscovery` are registered here together with `INetworkSession` and `ILanDiscovery`.
+- **`MenuLifetimeScope`** (`Main Menu` scene) runs the MVP menu `MainMenuView` / `MainMenuPresenter`: Solo, Host, Join by IP and a list of LAN servers.
+- **`GameLifetimeScope`** (`Demo` scene) holds configs, `Wallet` / `Warehouse` and `ShopNetworkState`. `OfflineSessionStarter` starts solo when you press Play straight from `Demo`.
+- **Shop state is server-authoritative.** `IWallet` / `IWarehouse` are the server-side model and only the host changes them. Gameplay and UI on every peer read state through **`IShopState`** (SyncVar / SyncDictionary keyed by `ProductCatalog` index) and change it through **`IShopCommands`** (direct call on the host, `[Command]` on clients).
+- `Demo` uses Akila Pro's `Game Manager Variant` with `GameModer` / `GameModerUI` removed (no deathmatch) and `NetworkStartPosition` on the spawn points.
+
+Vendor patches: Mirror `NetworkManager.StopServer/StopClient` only move a **root** NetworkManager out of DDOL (ours is parented to the root scope). Akila Pro `NetworkActor` null-guards `GameModer.Instance`.
+
+`VContainerSettings.DisableScriptModifier = true` is required: otherwise VContainer overwrites every new `*LifetimeScope.cs` file with its template.
 
 ## Conventions
 

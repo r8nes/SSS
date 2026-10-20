@@ -1,0 +1,22 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c41fd3e8c03ebd9408cc57b578fafb2c, type: 3}
+  m_Name: Ammo_556
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Catalog.ProductConfig
+  _icon: {fileID: 0}
+  _displayName: 5.56mm Ammo
+  _category: 4
+  _packSize: 30
+  _buyPrice: 30
+  _sellPrice: 50
+  _storageSize: 1
+  _displayPrefab: {fileID: 5727318654148026565, guid: 7c69369ca5d72954586f004d3ac27aeb, type: 3}

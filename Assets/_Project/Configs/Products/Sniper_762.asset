@@ -1,0 +1,22 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c41fd3e8c03ebd9408cc57b578fafb2c, type: 3}
+  m_Name: Sniper_762
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Catalog.ProductConfig
+  _icon: {fileID: 0}
+  _displayName: Sniper Rifle 7.62
+  _category: 3
+  _packSize: 30
+  _buyPrice: 2500
+  _sellPrice: 3800
+  _storageSize: 5
+  _displayPrefab: {fileID: 2044694923625134274, guid: 25713e62f4e3b444bb96bba0adf20e98, type: 3}
