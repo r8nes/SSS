@@ -1,7 +1,9 @@
 using System;
 using Akila.FPSFramework;
 using Mirror;
+using System.Collections.Generic;
 using ShooterShop.Catalog;
+using ShooterShop.Range;
 using Sirenix.OdinInspector;
 using TMPro;
 using UnityEngine;
@@ -10,7 +12,7 @@ using VContainer;
 
 namespace ShooterShop.Customers
 {
-    public sealed class Customer : NetworkBehaviour, IInteractable
+    public sealed class Customer : NetworkBehaviour, IInteractable, IRangeShooter
     {
         [Required]
         [SerializeField] private NavMeshAgent _agent;
@@ -24,11 +26,23 @@ namespace ShooterShop.Customers
         [BoxGroup("Animation"), MinValue(1)]
         [SerializeField] private float _animationSmoothing = 10f;
 
+        [BoxGroup("Range"), ChildGameObjectsOnly]
+        [SerializeField] private List<GameObject> _weaponParts = new();
+
+        [BoxGroup("Range")]
+        [SerializeField] private string _weaponLayer = "Pistol";
+
+        [BoxGroup("Range")]
+        [SerializeField] private string _fireState = "Fire";
+
         [SyncVar(hook = nameof(OnRequestSynced))]
         private int _productIndex = -1;
 
         [SyncVar(hook = nameof(OnRequestSynced))]
         private int _amount;
+
+        [SyncVar(hook = nameof(OnRequestSynced))]
+        private int _laneFee;
 
         [SyncVar(hook = nameof(OnStateSynced))]
         private CustomerState _state;
@@ -53,7 +67,7 @@ namespace ShooterShop.Customers
         public bool HasRequest => _catalog != null && _catalog.TryGet(_productIndex, out _);
 
         public CustomerRequest Request =>
-            _catalog.TryGet(_productIndex, out var product) ? new CustomerRequest(product, _amount) : default;
+            _catalog.TryGet(_productIndex, out var product) ? new CustomerRequest(product, _amount, _laneFee) : default;
 
         public bool requireHoldToInteract => false;
         public bool isHighlighted { get; set; }
@@ -76,6 +90,7 @@ namespace ShooterShop.Customers
                 _animator.SetLayerWeight(layer, 0f);
 
             _registry.Add(this);
+            RefreshWeapon();
             RefreshLabel();
         }
 
@@ -100,6 +115,7 @@ namespace ShooterShop.Customers
         {
             _productIndex = _catalog.IndexOf(request.Product);
             _amount = request.Amount;
+            _laneFee = request.LaneFee;
             _agent.speed = speed;
             ServerSetState(CustomerState.Arriving);
         }
@@ -113,8 +129,12 @@ namespace ShooterShop.Customers
                 WaitingSince = Time.time;
 
             RefreshLabel();
+            RefreshWeapon();
             StateChanged?.Invoke(this);
         }
+
+        [Server]
+        public void ServerFire() => RpcFire();
 
         [Server]
         public void ServerMoveTo(Vector3 destination) => _agent.SetDestination(destination);
@@ -140,9 +160,31 @@ namespace ShooterShop.Customers
         private void OnStateSynced(CustomerState _, CustomerState __)
         {
             RefreshLabel();
+            RefreshWeapon();
 
             if (!isServer)
                 StateChanged?.Invoke(this);
+        }
+
+        [ClientRpc]
+        private void RpcFire()
+        {
+            var layer = _animator.GetLayerIndex(_weaponLayer);
+
+            if (layer >= 0)
+                _animator.Play(_fireState, layer, 0f);
+        }
+
+        private void RefreshWeapon()
+        {
+            var isShooting = _state == CustomerState.Shooting;
+            var layer = _animator.GetLayerIndex(_weaponLayer);
+
+            foreach (var part in _weaponParts)
+                part.SetActive(isShooting);
+
+            if (layer >= 0)
+                _animator.SetLayerWeight(layer, isShooting ? 1f : 0f);
         }
 
         private void RefreshLabel()
@@ -152,7 +194,7 @@ namespace ShooterShop.Customers
 
             _label.text = _state switch
             {
-                CustomerState.Waiting when HasRequest => $"{Request.Amount} x {Request.Product.DisplayName}",
+                CustomerState.Waiting when HasRequest => Request.Describe(),
                 CustomerState.Arriving => "...",
                 _ => string.Empty
             };

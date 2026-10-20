@@ -6,6 +6,7 @@ using ShooterShop.Input;
 using ShooterShop.Loading;
 using ShooterShop.Network;
 using ShooterShop.Purchasing;
+using ShooterShop.Range;
 using ShooterShop.Sales;
 using ShooterShop.Storage;
 using Sirenix.OdinInspector;
@@ -26,6 +27,9 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private CustomerConfig _customerConfig;
 
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private RangeConfig _rangeConfig;
+
         [BoxGroup("Network"), Required, SceneObjectsOnly]
         [SerializeField] private ShopNetworkState _shopNetworkState;
 
@@ -40,6 +44,9 @@ namespace ShooterShop.Bootstrap
 
         [BoxGroup("Customers"), Required, SceneObjectsOnly]
         [SerializeField] private SaleDialogView _saleDialogView;
+
+        [BoxGroup("Range"), Required, SceneObjectsOnly]
+        [SerializeField] private RangeLayout _rangeLayout;
 
         [BoxGroup("Hud"), Required, SceneObjectsOnly]
         [SerializeField] private MoneyHudView _moneyHudView;
@@ -58,6 +65,10 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_purchaseTerminal);
             builder.RegisterComponent(_purchaseTerminalView);
             builder.RegisterEntryPoint<PurchaseTerminalPresenter>();
+
+            builder.RegisterInstance(_rangeConfig);
+            builder.RegisterComponent(_rangeLayout);
+            builder.Register<ShootingRange>(Lifetime.Singleton).AsImplementedInterfaces();
 
             builder.RegisterInstance(_customerConfig);
             builder.RegisterComponent(_shopLayout);

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -5,54 +6,66 @@ using Cysharp.Threading.Tasks;
 using Mirror;
 using ShooterShop.Catalog;
 using ShooterShop.Economy;
+using ShooterShop.Range;
 using ShooterShop.Storage;
 using UnityEngine;
 using VContainer;
 using VContainer.Unity;
+using Random = UnityEngine.Random;
 
 namespace ShooterShop.Customers
 {
-    public sealed class CustomerDirector : ICustomerService, IAsyncStartable, ITickable
+    public sealed class CustomerDirector : ICustomerService, IAsyncStartable, ITickable, IDisposable
     {
         private readonly CustomerConfig _config;
+        private readonly RangeConfig _rangeConfig;
         private readonly ShopLayout _layout;
         private readonly ProductCatalog _catalog;
         private readonly IWarehouse _warehouse;
         private readonly IWallet _wallet;
+        private readonly IShootingRange _range;
         private readonly IObjectResolver _resolver;
         private readonly List<Customer> _customers = new();
+        private readonly Dictionary<Customer, ShootingLane> _lanes = new();
         private readonly Customer[] _slots;
 
         public CustomerDirector(
             CustomerConfig config,
+            RangeConfig rangeConfig,
             ShopLayout layout,
             ProductCatalog catalog,
             IWarehouse warehouse,
             IWallet wallet,
+            IShootingRange range,
             IObjectResolver resolver)
         {
             _config = config;
+            _rangeConfig = rangeConfig;
             _layout = layout;
             _catalog = catalog;
             _warehouse = warehouse;
             _wallet = wallet;
+            _range = range;
             _resolver = resolver;
             _slots = new Customer[layout.CounterSlots.Count];
         }
 
         public async UniTask StartAsync(CancellationToken cancellation)
         {
+            _range.SessionFinished += OnSessionFinished;
             await UniTask.WaitUntil(() => NetworkServer.active, cancellationToken: cancellation);
 
             while (!cancellation.IsCancellationRequested && NetworkServer.active)
             {
                 var interval = Random.Range(_config.SpawnInterval.x, _config.SpawnInterval.y);
-                await UniTask.Delay(System.TimeSpan.FromSeconds(interval), cancellationToken: cancellation);
+                await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation);
 
                 if (_customers.Count < _config.MaxCustomers && TryGetFreeSlot(out var slot))
                     Spawn(slot);
             }
         }
+
+        public void Dispose() => _range.SessionFinished -= OnSessionFinished;
 
         public void Tick()
         {
@@ -74,7 +87,12 @@ namespace ShooterShop.Customers
                 return false;
 
             _wallet.Add(request.Price);
-            Leave(customer);
+
+            if (_lanes.TryGetValue(customer, out var lane))
+                SendToLane(customer, lane);
+            else
+                Leave(customer);
+
             return true;
         }
 
@@ -101,6 +119,9 @@ namespace ShooterShop.Customers
                 case CustomerState.Waiting when Time.time - customer.WaitingSince > _config.Patience:
                     Leave(customer);
                     break;
+                case CustomerState.GoingToLane when customer.ServerHasArrived():
+                    StartShooting(customer);
+                    break;
                 case CustomerState.Leaving when customer.ServerHasArrived():
                     _customers.Remove(customer);
                     NetworkServer.Destroy(customer.gameObject);
@@ -112,8 +133,9 @@ namespace ShooterShop.Customers
         {
             var entrance = _layout.Entrance;
             var customer = _resolver.Instantiate(_config.Prefab, entrance.position, entrance.rotation);
+            var request = PickRequest(customer);
 
-            customer.ServerInitialize(PickRequest(), _config.WalkSpeed);
+            customer.ServerInitialize(request, _config.WalkSpeed);
             NetworkServer.Spawn(customer.gameObject);
 
             customer.CounterSlot = slot;
@@ -122,35 +144,85 @@ namespace ShooterShop.Customers
             customer.ServerMoveTo(_layout.CounterSlots[slot].position);
         }
 
+        private void SendToLane(Customer customer, ShootingLane lane)
+        {
+            FreeSlot(customer);
+            customer.ServerSetState(CustomerState.GoingToLane);
+            customer.ServerMoveTo(lane.StandPoint.position);
+        }
+
+        private void StartShooting(Customer customer)
+        {
+            var lane = _lanes[customer];
+            var toTarget = Vector3.ProjectOnPlane(lane.Target.position - customer.transform.position, Vector3.up);
+
+            customer.ServerFace(Quaternion.LookRotation(toTarget));
+            customer.ServerSetState(CustomerState.Shooting);
+            _range.StartSession(lane, customer);
+        }
+
+        private void OnSessionFinished(ShootingLane lane)
+        {
+            var customer = _lanes.FirstOrDefault(pair => pair.Value == lane).Key;
+
+            if (customer != null)
+                Leave(customer);
+            else
+                _range.Release(lane);
+        }
+
         private void Leave(Customer customer)
+        {
+            FreeSlot(customer);
+
+            if (_lanes.Remove(customer, out var lane))
+                _range.Release(lane);
+
+            customer.ServerSetState(CustomerState.Leaving);
+            customer.ServerMoveTo(_layout.Exit.position);
+        }
+
+        private void FreeSlot(Customer customer)
         {
             if (customer.CounterSlot >= 0 && _slots[customer.CounterSlot] == customer)
                 _slots[customer.CounterSlot] = null;
 
             customer.CounterSlot = -1;
-            customer.ServerSetState(CustomerState.Leaving);
-            customer.ServerMoveTo(_layout.Exit.position);
         }
 
         private bool TryGetFreeSlot(out int slot)
         {
-            slot = System.Array.FindIndex(_slots, s => s == null);
+            slot = Array.FindIndex(_slots, s => s == null);
             return slot >= 0;
         }
 
-        private CustomerRequest PickRequest()
+        private CustomerRequest PickRequest(Customer customer)
         {
-            var inStock = _catalog.Products.Where(p => _warehouse.GetAmount(p) > 0).ToList();
-            var fromStock = inStock.Count > 0 && Random.value < _config.InStockRequestChance;
-            var pool = fromStock ? inStock : _catalog.Products.ToList();
-            var product = pool[Random.Range(0, pool.Count)];
+            var ammo = _catalog.Products.Where(p => p.IsAmmo).ToList();
 
-            var maxAmount = product.IsAmmo ? _config.MaxAmmoAmount : _config.MaxWeaponAmount;
+            if (ammo.Count > 0 && Random.value < _rangeConfig.VisitorChance && _range.TryReserveLane(out var lane))
+            {
+                _lanes[customer] = lane;
+                var product = PickProduct(ammo);
+                var boxes = Random.Range(1, _rangeConfig.MaxAmmoBoxes + 1);
+                return new CustomerRequest(product, boxes, _rangeConfig.LaneFee);
+            }
 
-            if (fromStock)
-                maxAmount = Mathf.Min(maxAmount, _warehouse.GetAmount(product));
+            var shopProduct = PickProduct(_catalog.Products);
+            var maxAmount = shopProduct.IsAmmo ? _config.MaxAmmoAmount : _config.MaxWeaponAmount;
+            var stock = _warehouse.GetAmount(shopProduct);
 
-            return new CustomerRequest(product, Random.Range(1, maxAmount + 1));
+            if (stock > 0)
+                maxAmount = Mathf.Min(maxAmount, stock);
+
+            return new CustomerRequest(shopProduct, Random.Range(1, maxAmount + 1));
+        }
+
+        private ProductConfig PickProduct(IReadOnlyList<ProductConfig> pool)
+        {
+            var inStock = pool.Where(p => _warehouse.GetAmount(p) > 0).ToList();
+            var source = inStock.Count > 0 && Random.value < _config.InStockRequestChance ? inStock : pool;
+            return source[Random.Range(0, source.Count)];
         }
     }
 }

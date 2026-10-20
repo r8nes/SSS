@@ -4,6 +4,8 @@ namespace ShooterShop.Customers
     {
         Arriving,
         Waiting,
+        GoingToLane,
+        Shooting,
         Leaving
     }
 }

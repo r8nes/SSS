@@ -59,7 +59,7 @@ namespace ShooterShop.Sales
             _customer.StateChanged += OnCustomerStateChanged;
 
             var request = customer.Request;
-            _view.SetRequest($"{request.Amount} x {request.Product.DisplayName}", $"Pays ${request.Price:N0}");
+            _view.SetRequest(request.Describe(), $"Pays ${request.Price:N0}");
             _view.SetMessage(string.Empty);
             RefreshStock();
 
