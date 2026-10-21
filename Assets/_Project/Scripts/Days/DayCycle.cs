@@ -38,7 +38,7 @@ namespace ShooterShop.Days
 
         public void Tick()
         {
-            if (!NetworkServer.active || !_state.isServer)
+            if (_state == null || !NetworkServer.active || !_state.isServer)
                 return;
 
             switch (_state.Phase)
