@@ -69,8 +69,14 @@ namespace ShooterShop.Range
 
         public void Tick()
         {
+            if (_layout == null)
+                return;
+
             foreach (var lane in _layout.Lanes)
             {
+                if (lane == null)
+                    continue;
+
                 lane.TickDisplay(_unlocks.IsUnlocked(lane.RequiredUpgrade));
 
                 if (NetworkServer.active)

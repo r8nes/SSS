@@ -34,7 +34,7 @@ namespace ShooterShop.Sales
 
         public void Tick()
         {
-            if (_view.IsOpen && Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
+            if (_view != null && _view.IsOpen && Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
                 Close();
         }
 
@@ -90,8 +90,10 @@ namespace ShooterShop.Sales
                 _customer.StateChanged -= OnCustomerStateChanged;
 
             _customer = null;
-            _view.SetOpen(false);
             _inputLock.Release(this);
+
+            if (_view != null)
+                _view.SetOpen(false);
         }
 
         private void OnCustomerStateChanged(Customer customer)

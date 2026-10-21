@@ -61,7 +61,7 @@ namespace ShooterShop.Purchasing
 
         public void Tick()
         {
-            if (_view.IsOpen && Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
+            if (_view != null && _view.IsOpen && Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
                 Close();
         }
 

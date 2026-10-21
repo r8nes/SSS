@@ -14,7 +14,11 @@ namespace ShooterShop.Days
             _state = state;
         }
 
-        public void Tick() => _view.SetText(Format());
+        public void Tick()
+        {
+            if (_view != null)
+                _view.SetText(Format());
+        }
 
         private string Format() => _state.Phase switch
         {
