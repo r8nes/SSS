@@ -161,7 +161,7 @@ namespace Akila.FPSFrameworkPro
             }
 
             // Trigger global firearm hit callbacks (e.g., sounds, effects)
-            Firearm.InvokeHitCallbacks(obj, ray, hit, targetProjectile.source.preset.impactForce);
+            Firearm.InvokeHitCallbacks(sourcePlayer ? sourcePlayer.gameObject : obj, ray, hit, targetProjectile.source.preset.impactForce);
 
             // Spawn decal at hit location if defined
             if (targetProjectile.defaultDecal != null)

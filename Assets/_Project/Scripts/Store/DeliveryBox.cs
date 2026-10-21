@@ -185,6 +185,9 @@ namespace ShooterShop.Store
         {
             _collider.enabled = !IsCarried;
 
+            if (!IsCarried)
+                _carry.Detach(this);
+
             if (IsCarried)
                 _outline.SetVisible(false);
         }

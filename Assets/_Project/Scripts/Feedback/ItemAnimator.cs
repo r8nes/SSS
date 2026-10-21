@@ -25,12 +25,20 @@ namespace ShooterShop.Feedback
                     target.localPosition = Vector3.Lerp(start, end, t) + lift * (4f * t * (1f - t)),
                 _config.PlaceEase);
             Tween.Scale(item, Vector3.one * _config.PlaceStartScale, Vector3.one, _config.PlaceDuration, Ease.OutBack);
+            Tween.Delay(item, _config.PlaceDuration, Settle);
+        }
+
+        public void Settle(Transform item)
+        {
+            var strength = _config.SettleStrength;
+            Tween.PunchScale(item, new Vector3(strength, -strength, strength), _config.SettleDuration, 6f);
         }
 
         public void PopIn(Transform item, Vector3 targetScale)
         {
             Tween.StopAll(item);
             Tween.Scale(item, Vector3.zero, targetScale, _config.PopDuration, _config.PopEase);
+            Tween.Delay(item, _config.PopDuration, Settle);
         }
 
         public void Vanish(GameObject item)

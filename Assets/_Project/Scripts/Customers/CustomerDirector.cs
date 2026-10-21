@@ -20,7 +20,7 @@ using Random = UnityEngine.Random;
 
 namespace ShooterShop.Customers
 {
-    public sealed class CustomerDirector : ICustomerService, IAsyncStartable, ITickable, IDisposable
+    public sealed class CustomerDirector : ICustomerService, ICustomerDamage, IAsyncStartable, ITickable, IDisposable
     {
         private readonly CustomerConfig _config;
         private readonly RangeConfig _rangeConfig;
@@ -42,6 +42,8 @@ namespace ShooterShop.Customers
         private readonly Dictionary<Customer, ProductStand> _stands = new();
         private readonly HashSet<Customer> _holdingItems = new();
         private readonly List<Customer> _queue = new();
+        private readonly CancellationTokenSource _lifetime = new();
+        private float _panicUntil;
 
         public CustomerDirector(
             CustomerConfig config,
@@ -93,12 +95,81 @@ namespace ShooterShop.Customers
                 if (await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation).SuppressCancellationThrow())
                     return;
 
-                if (_day.IsOpen && _customers.Count < _config.MaxCustomers)
+                if (_day.IsOpen && Time.time >= _panicUntil && _customers.Count < _config.MaxCustomers)
                     Spawn();
             }
         }
 
-        public void Dispose() => _range.SessionFinished -= OnSessionFinished;
+        public void Dispose()
+        {
+            _range.SessionFinished -= OnSessionFinished;
+            _lifetime.Cancel();
+            _lifetime.Dispose();
+        }
+
+        public void ServerHit(Customer customer)
+        {
+            if (customer == null || customer.State == CustomerState.Dead || !customer.HasRequest || !_customers.Contains(customer))
+                return;
+
+            if (customer.ServerRegisterHit() >= _config.HitsToKill)
+                Kill(customer);
+        }
+
+        private void Kill(Customer customer)
+        {
+            RemoveFromQueue(customer);
+            ReturnItems(customer);
+            _stands.Remove(customer);
+
+            if (_lanes.Remove(customer, out var lane))
+                _range.Release(lane);
+
+            DropRentalWeapon(customer);
+            _customers.Remove(customer);
+
+            customer.ServerDie(_config.CorpseFallDuration, _config.CorpseSinkDelay, _config.CorpseSinkDuration, _config.CorpseSinkDepth);
+            DespawnCorpseAsync(customer).Forget();
+            Panic();
+        }
+
+        private void Panic()
+        {
+            _panicUntil = Time.time + _config.PanicDuration;
+            _feed.Notify("Shots fired! Customers are running away", NotificationKind.Warning);
+
+            foreach (var customer in _customers.ToList())
+            {
+                if (customer == null || customer.State == CustomerState.Leaving)
+                    continue;
+
+                DropRentalWeapon(customer);
+                Leave(customer);
+                customer.ServerSetSpeedMultiplier(_config.PanicSpeedMultiplier);
+            }
+        }
+
+        private void DropRentalWeapon(Customer customer)
+        {
+            if (customer.RentalWeapon < 0)
+                return;
+
+            if (!_rentals.Handout.ServerPut(customer.RentalWeapon))
+                _rentals.Rack.ServerPut(customer.RentalWeapon);
+
+            customer.ServerSetRentalWeapon(-1);
+        }
+
+        private async UniTaskVoid DespawnCorpseAsync(Customer customer)
+        {
+            var lifetime = _config.CorpseFallDuration + _config.CorpseSinkDelay + _config.CorpseSinkDuration;
+
+            if (await UniTask.Delay(TimeSpan.FromSeconds(lifetime), cancellationToken: _lifetime.Token).SuppressCancellationThrow())
+                return;
+
+            if (customer != null && NetworkServer.active)
+                NetworkServer.Destroy(customer.gameObject);
+        }
 
         public void Tick()
         {
@@ -191,7 +262,7 @@ namespace ShooterShop.Customers
                     TickWaitingForWeapon(customer);
                     break;
                 case CustomerState.ReturningWeapon when customer.ServerTickArrival():
-                    Leave(customer);
+                    TryHandBack(customer);
                     break;
                 case CustomerState.GoingToLane when customer.ServerTickArrival():
                     StartShooting(customer);
@@ -280,7 +351,7 @@ namespace ShooterShop.Customers
             }
 
             if (weapon >= 0)
-                ReturnWeapon(weapon);
+                _rentals.Handout.ServerPut(weapon);
 
             if (customer.PatienceLeft > 0f)
                 return;
@@ -289,10 +360,14 @@ namespace ShooterShop.Customers
             Leave(customer);
         }
 
-        private void ReturnWeapon(int weapon)
+        private void TryHandBack(Customer customer)
         {
-            if (!_rentals.Handout.ServerPut(weapon))
-                _rentals.Rack.ServerPut(weapon);
+            if (!_rentals.Handout.ServerPut(customer.RentalWeapon))
+                return;
+
+            customer.ServerSetRentalWeapon(-1);
+            _feed.Notify("A shooter put the rental gun back on the counter", NotificationKind.Info);
+            Leave(customer);
         }
 
         private void StartSearching(Customer customer, ProductConfig product)
@@ -358,14 +433,14 @@ namespace ShooterShop.Customers
                 return;
             }
 
-            if (customer.RentalWeapon < 0)
-            {
-                Leave(customer);
-                return;
-            }
+            Leave(customer);
+        }
 
-            _lanes.Remove(customer);
-            _range.Release(lane);
+        private void SendToReturnWeapon(Customer customer)
+        {
+            if (customer.State == CustomerState.ReturningWeapon)
+                return;
+
             customer.ServerSetState(CustomerState.ReturningWeapon);
             customer.ServerMoveTo(_rentals.Handout.CustomerPoint.position, _rentals.Handout.CustomerPoint.rotation);
         }
@@ -376,15 +451,14 @@ namespace ShooterShop.Customers
             ReturnItems(customer);
             _stands.Remove(customer);
 
-            if (customer.RentalWeapon >= 0)
-            {
-                ReturnWeapon(customer.RentalWeapon);
-                customer.ServerSetRentalWeapon(-1);
-                _feed.Notify("A shooter returned the rental gun to the counter", NotificationKind.Info);
-            }
-
             if (_lanes.Remove(customer, out var lane))
                 _range.Release(lane);
+
+            if (customer.RentalWeapon >= 0)
+            {
+                SendToReturnWeapon(customer);
+                return;
+            }
 
             customer.ServerSetState(CustomerState.Leaving);
             customer.ServerMoveTo(_layout.Exit.position);

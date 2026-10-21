@@ -12,6 +12,7 @@ namespace ShooterShop.Customers
         Delivering,
         GoingToHandout,
         WaitingForWeapon,
-        ReturningWeapon
+        ReturningWeapon,
+        Dead
     }
 }

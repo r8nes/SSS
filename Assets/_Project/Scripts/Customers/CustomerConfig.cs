@@ -46,6 +46,35 @@ namespace ShooterShop.Customers
         [InfoBox("Per 1% of stand markup: chance to refuse when above zero, chance to take one more when below")]
         [SerializeField] private float _priceSensitivity = 0.015f;
 
+        [BoxGroup("Violence"), MinValue(1)]
+        [SerializeField] private int _hitsToKill = 2;
+
+        [BoxGroup("Violence"), MinValue(1), SuffixLabel("sec")]
+        [InfoBox("After a customer is killed everyone runs out and nobody comes in for this long")]
+        [SerializeField] private float _panicDuration = 30;
+
+        [BoxGroup("Violence"), MinValue(1)]
+        [SerializeField] private float _panicSpeedMultiplier = 2.2f;
+
+        [BoxGroup("Corpse"), MinValue(0.1f), SuffixLabel("sec")]
+        [SerializeField] private float _corpseFallDuration = 0.5f;
+
+        [BoxGroup("Corpse"), MinValue(0), SuffixLabel("sec")]
+        [SerializeField] private float _corpseSinkDelay = 3f;
+
+        [BoxGroup("Corpse"), MinValue(0.5f), SuffixLabel("sec")]
+        [SerializeField] private float _corpseSinkDuration = 6f;
+
+        [BoxGroup("Corpse"), MinValue(0.1f), SuffixLabel("m")]
+        [SerializeField] private float _corpseSinkDepth = 1.2f;
+
+        public int HitsToKill => _hitsToKill;
+        public float PanicDuration => _panicDuration;
+        public float PanicSpeedMultiplier => _panicSpeedMultiplier;
+        public float CorpseFallDuration => _corpseFallDuration;
+        public float CorpseSinkDelay => _corpseSinkDelay;
+        public float CorpseSinkDuration => _corpseSinkDuration;
+        public float CorpseSinkDepth => _corpseSinkDepth;
         public Customer Prefab => _prefab;
         public float SearchPatience => _searchPatience;
         public float TipWindow => _tipWindow;

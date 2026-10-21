@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Mirror;
 using ShooterShop.Catalog;
+using ShooterShop.Feedback;
 using ShooterShop.Input;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -8,15 +9,17 @@ using VContainer.Unity;
 
 namespace ShooterShop.Store
 {
-    public sealed class CarryService : ITickable
+    public sealed class CarryService : ITickable, IPostLateTickable
     {
         private readonly StoreConfig _config;
         private readonly IPlayerInputLock _inputLock;
+        private readonly IViewCamera _viewCamera;
         private readonly List<DeliveryBox> _boxes = new();
         private readonly Dictionary<uint, Transform> _pivots = new();
 
-        public CarryService(StoreConfig config, IPlayerInputLock inputLock)
+        public CarryService(StoreConfig config, IPlayerInputLock inputLock, IViewCamera viewCamera)
         {
+            _viewCamera = viewCamera;
             _config = config;
             _inputLock = inputLock;
         }
@@ -65,16 +68,6 @@ namespace ShooterShop.Store
 
         public void Tick()
         {
-            for (var i = _boxes.Count - 1; i >= 0; i--)
-            {
-                var box = _boxes[i];
-
-                if (box == null)
-                    _boxes.RemoveAt(i);
-                else if (box.IsCarried)
-                    Follow(box);
-            }
-
             if (_inputLock.IsLocked || Keyboard.current == null)
                 return;
 
@@ -85,8 +78,27 @@ namespace ShooterShop.Store
 
             if (Keyboard.current[_config.DropKey].wasPressedThisFrame)
                 carried.RequestDrop();
-            else if (Keyboard.current[_config.ThrowKey].wasPressedThisFrame && FindPivot(LocalPlayerNetId) is { } pivot)
-                carried.RequestThrow(pivot.forward);
+            else if (Keyboard.current[_config.ThrowKey].wasPressedThisFrame && FindHoldAnchor(LocalPlayerNetId) is { } anchor)
+                carried.RequestThrow(anchor.forward);
+        }
+
+        public void PostLateTick()
+        {
+            for (var i = _boxes.Count - 1; i >= 0; i--)
+            {
+                var box = _boxes[i];
+
+                if (box == null)
+                    _boxes.RemoveAt(i);
+                else if (box.IsCarried)
+                    Attach(box);
+            }
+        }
+
+        public void Detach(DeliveryBox box)
+        {
+            if (box.transform.parent != null)
+                box.transform.SetParent(null, true);
         }
 
         public (Vector3 Position, Quaternion Rotation) FindDropPose(DeliveryBox box)
@@ -147,16 +159,21 @@ namespace ShooterShop.Store
             return null;
         }
 
-        private void Follow(DeliveryBox box)
+        private void Attach(DeliveryBox box)
         {
-            var pivot = FindPivot(box.CarrierNetId);
+            var anchor = FindHoldAnchor(box.CarrierNetId);
 
-            if (pivot == null)
+            if (anchor == null || box.transform.parent == anchor)
                 return;
 
-            box.transform.SetPositionAndRotation(
-                pivot.TransformPoint(_config.HoldOffset),
-                Quaternion.Euler(0f, pivot.eulerAngles.y, 0f));
+            box.transform.SetParent(anchor, false);
+            box.transform.SetLocalPositionAndRotation(_config.HoldOffset, Quaternion.identity);
+        }
+
+        private Transform FindHoldAnchor(uint netId)
+        {
+            var camera = _viewCamera.Current;
+            return netId == LocalPlayerNetId && camera != null ? camera.transform : FindPivot(netId);
         }
 
         private Transform FindPivot(uint netId)

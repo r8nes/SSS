@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Sirenix.OdinInspector;
 using UnityEngine;
 
@@ -18,7 +19,6 @@ namespace ShooterShop.Feedback
         [InfoBox("Static meshes get a separate shell object with smoothed normals, so the outline follows the silhouette on batched and multi-material renderers. Rebuild after changing renderers.")]
         [SerializeField] private List<GameObject> _shells = new();
 
-        private readonly List<Material> _buffer = new();
         private bool _isVisible;
         private bool _isPrepared;
 
@@ -36,9 +36,7 @@ namespace ShooterShop.Feedback
                 if (shell != null)
                     shell.SetActive(visible);
 
-            foreach (var target in _renderers)
-                if (target is SkinnedMeshRenderer)
-                    AppendMaterial(target, visible);
+            MaterialOutline.Apply(_renderers.Where(target => target is SkinnedMeshRenderer), _outlineMaterial, visible);
         }
 
         private void PrepareShells()
@@ -53,17 +51,6 @@ namespace ShooterShop.Feedback
                 if (!filter.sharedMesh.name.EndsWith("(Outline)") && OutlineMeshes.TryGetSmoothed(filter.sharedMesh, out var smoothed))
                     filter.sharedMesh = smoothed;
             }
-        }
-
-        private void AppendMaterial(Renderer target, bool visible)
-        {
-            target.GetSharedMaterials(_buffer);
-            _buffer.Remove(_outlineMaterial);
-
-            if (visible)
-                _buffer.Add(_outlineMaterial);
-
-            target.SetSharedMaterials(_buffer);
         }
 
 #if UNITY_EDITOR

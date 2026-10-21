@@ -1,6 +1,7 @@
 using System;
 using Akila.FPSFramework;
 using Mirror;
+using PrimeTween;
 using System.Collections.Generic;
 using ShooterShop.Catalog;
 using ShooterShop.Feedback;
@@ -13,7 +14,7 @@ using VContainer;
 
 namespace ShooterShop.Customers
 {
-    public sealed class Customer : NetworkBehaviour, IInteractable, IRangeShooter
+    public sealed class Customer : NetworkBehaviour, IInteractable, IRangeShooter, IOnHitInChildren
     {
         [Required]
         [SerializeField] private NavMeshAgent _agent;
@@ -33,6 +34,13 @@ namespace ShooterShop.Customers
         [BoxGroup("Animation"), MinValue(0.1f)]
         [InfoBox("Blend tree MoveY value of the walk clip")]
         [SerializeField] private float _walkBlendValue = 5f;
+
+        [BoxGroup("Navigation"), MinMaxSlider(0, 99, true)]
+        [InfoBox("Lower is more important: walking customers push through, standing ones step aside")]
+        [SerializeField] private Vector2Int _movingPriority = new(30, 60);
+
+        [BoxGroup("Navigation"), Range(0, 99)]
+        [SerializeField] private int _standingPriority = 90;
 
         [BoxGroup("Patience"), Required, ChildGameObjectsOnly]
         [SerializeField] private GameObject _patienceBar;
@@ -90,6 +98,8 @@ namespace ShooterShop.Customers
 
         private ProductCatalog _catalog;
         private ICustomerInteraction _interaction;
+        private ICustomerDamage _damage;
+        private int _hitsTaken;
         private CustomerRegistry _registry;
         private IScreenLabels _screenLabels;
         private IViewCamera _viewCamera;
@@ -135,8 +145,9 @@ namespace ShooterShop.Customers
         }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback)
+        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback, ICustomerDamage damage)
         {
+            _damage = damage;
             _screenLabels = screenLabels;
             _viewCamera = viewCamera;
             _feedback = feedback;
@@ -233,6 +244,40 @@ namespace ShooterShop.Customers
         public void ServerSetMarkup(int markupPercent) => _markupPercent = markupPercent;
 
         [Server]
+        public int ServerRegisterHit() => ++_hitsTaken;
+
+        [Server]
+        public void ServerSetSpeedMultiplier(float multiplier) => _agent.speed *= multiplier;
+
+        [Server]
+        public void ServerDie(float fallDuration, float sinkDelay, float sinkDuration, float sinkDepth)
+        {
+            ServerSetState(CustomerState.Dead);
+            _agent.enabled = false;
+
+            var fallen = transform.rotation * Quaternion.Euler(-85f, 0f, 0f);
+            var position = transform.position;
+            Tween.Rotation(transform, fallen, fallDuration, Ease.OutBounce);
+            Tween.Position(transform, position, position + Vector3.down * sinkDepth, sinkDuration, Ease.InSine, startDelay: fallDuration + sinkDelay);
+        }
+
+        public void OnHitInChildren(HitInfo hitInfo)
+        {
+            var source = hitInfo.sourcePlayer;
+
+            if (_state == CustomerState.Dead || source == null || NetworkClient.localPlayer == null || source.transform.root != NetworkClient.localPlayer.transform)
+                return;
+
+            if (isServer)
+                _damage.ServerHit(this);
+            else
+                CmdHit();
+        }
+
+        [Command(requiresAuthority = false)]
+        private void CmdHit() => _damage.ServerHit(this);
+
+        [Server]
         public void ServerSetRentalWeapon(int weapon)
         {
             _rentalWeapon = weapon;
@@ -251,6 +296,7 @@ namespace ShooterShop.Customers
         public void ServerMoveTo(Vector3 destination, Quaternion? arrivalRotation = null)
         {
             _arrivalRotation = arrivalRotation;
+            _agent.avoidancePriority = UnityEngine.Random.Range(_movingPriority.x, _movingPriority.y + 1);
             _agent.SetDestination(destination);
         }
 
@@ -259,6 +305,8 @@ namespace ShooterShop.Customers
         {
             if (!ServerHasArrived())
                 return false;
+
+            _agent.avoidancePriority = _standingPriority;
 
             if (_arrivalRotation.HasValue)
             {
@@ -307,12 +355,12 @@ namespace ShooterShop.Customers
 
         private void RefreshWeapon()
         {
-            var isShooting = _state == CustomerState.Shooting;
             var isHoldingRental = _rentalWeapon >= 0 && _state is CustomerState.GoingToLane or CustomerState.Shooting or CustomerState.ReturningWeapon;
+            var isShooting = isHoldingRental && _state == CustomerState.Shooting;
             var layer = _animator.GetLayerIndex(_weaponLayer);
 
             foreach (var part in _weaponParts)
-                part.SetActive(isShooting || isHoldingRental);
+                part.SetActive(isHoldingRental);
 
             if (layer >= 0)
                 _animator.SetLayerWeight(layer, isShooting ? 1f : 0f);

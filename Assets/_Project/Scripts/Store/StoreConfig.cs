@@ -40,6 +40,16 @@ namespace ShooterShop.Store
         [BoxGroup("Carrying")]
         [SerializeField] private Key _dropKey = Key.G;
 
+        [BoxGroup("Placing")]
+        [InfoBox("Must match the Akila Interact binding, holding it keeps placing units")]
+        [SerializeField] private Key _placeKey = Key.F;
+
+        [BoxGroup("Placing"), MinValue(0.05f), SuffixLabel("sec")]
+        [SerializeField] private float _holdRepeatDelay = 0.3f;
+
+        [BoxGroup("Placing"), MinValue(0.05f), SuffixLabel("sec")]
+        [SerializeField] private float _holdRepeatInterval = 0.15f;
+
         [BoxGroup("Carrying")]
         [SerializeField] private Key _throwKey = Key.T;
 
@@ -56,6 +66,9 @@ namespace ShooterShop.Store
         public Customer CourierPrefab => _courierPrefab;
         public float CourierSpeed => _courierSpeed;
         public Key DropKey => _dropKey;
+        public Key PlaceKey => _placeKey;
+        public float HoldRepeatDelay => _holdRepeatDelay;
+        public float HoldRepeatInterval => _holdRepeatInterval;
         public Key ThrowKey => _throwKey;
         public float ThrowSpeed => _throwSpeed;
         public int MarkupStep => _markupStep;

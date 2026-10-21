@@ -16,6 +16,10 @@ MonoBehaviour:
   _placeArcHeight: 0.35
   _placeStartScale: 0.4
   _placeEase: 6
+  _outlineMaterial: {fileID: 2100000, guid: 06d64a55bf556e1428b8f05a0f136403, type: 2}
+  _ghostMaterial: {fileID: 2100000, guid: 8c0078c2f21e6cb4cbfba16c99c42ef0, type: 2}
+  _settleStrength: 0.18
+  _settleDuration: 0.3
   _vanishDuration: 0.2
   _popDuration: 0.3
   _popEase: 27
@@ -29,7 +33,30 @@ MonoBehaviour:
   _infoColor: {r: 0.55, g: 0.75, b: 1, a: 1}
   _goodColor: {r: 0.45, g: 0.95, b: 0.45, a: 1}
   _warningColor: {r: 1, g: 0.55, b: 0.3, a: 1}
-  _popupPrefab: {fileID: 2534917138835165923, guid: 1c3329532773f54428f146f6deebd70a, type: 3}
+  _popupStyle:
+    _fontSize: 30
+    _color: {r: 1, g: 1, b: 1, a: 1}
+    _maxDistance: 0
+    _pinToScreenEdge: 0
   _popupDuration: 1.4
   _popupRise: 0.8
   _throwArcHeight: 0.6
+  _markerBobHeight: 0.12
+  _markerBobSpeed: 2.5
+  _deliveryMarkerRadius: 6
+  _screenLabelFont: {fileID: 0}
+  _screenLabelWidth: 360
+  _screenLabelOutline: 0.25
+  _screenEdgeMargin: 60
+  _screenLabelSortingOrder: -10
+  _markerStyle:
+    _fontSize: 26
+    _color: {r: 1, g: 0.85, b: 0.35, a: 1}
+    _maxDistance: 0
+    _pinToScreenEdge: 1
+  _customerStyle:
+    _fontSize: 20
+    _color: {r: 1, g: 1, b: 1, a: 1}
+    _maxDistance: 14
+    _pinToScreenEdge: 0
+  _markerOffset: {x: 0, y: 0.4, z: 0}

@@ -20,6 +20,21 @@ namespace ShooterShop.Feedback
         [BoxGroup("Place on stand")]
         [SerializeField] private Ease _placeEase = Ease.OutQuad;
 
+        [BoxGroup("Outline"), Required, AssetsOnly]
+        [InfoBox("Used for runtime objects like rental weapons on holders")]
+        [SerializeField] private Material _outlineMaterial;
+
+        [BoxGroup("Outline"), Required, AssetsOnly]
+        [InfoBox("Translucent preview of a held item where it will be placed")]
+        [SerializeField] private Material _ghostMaterial;
+
+        [BoxGroup("Place on stand"), Range(0f, 0.5f)]
+        [InfoBox("Squash and stretch after a unit lands in its slot")]
+        [SerializeField] private float _settleStrength = 0.18f;
+
+        [BoxGroup("Place on stand"), MinValue(0.05f), SuffixLabel("sec")]
+        [SerializeField] private float _settleDuration = 0.3f;
+
         [BoxGroup("Take from stand"), MinValue(0.05f), SuffixLabel("sec")]
         [SerializeField] private float _vanishDuration = 0.2f;
 
@@ -133,6 +148,10 @@ namespace ShooterShop.Feedback
             _ => _infoColor
         };
 
+        public Material OutlineMaterial => _outlineMaterial;
+        public Material GhostMaterial => _ghostMaterial;
+        public float SettleStrength => _settleStrength;
+        public float SettleDuration => _settleDuration;
         public float PlaceDuration => _placeDuration;
         public float PlaceArcHeight => _placeArcHeight;
         public float PlaceStartScale => _placeStartScale;

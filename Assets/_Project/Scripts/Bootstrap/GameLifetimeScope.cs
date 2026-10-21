@@ -163,6 +163,7 @@ namespace ShooterShop.Bootstrap
             builder.Register<CarryService>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
             builder.Register<DeliveryService>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.RegisterEntryPoint<StartingStockDelivery>();
+            builder.RegisterEntryPoint<StandHoldPlacer>();
             builder.RegisterBuildCallback(container =>
             {
                 foreach (var stand in _storeLayout.Stands)
