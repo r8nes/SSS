@@ -134,7 +134,7 @@ namespace ShooterShop.Purchasing
         private void Buy(ProductConfig product)
         {
             var amount = _amounts[product];
-            var cost = product.BuyPrice * amount;
+            var cost = _state.GetPurchaseCost(product, amount);
 
             if (!_unlocks.IsUnlocked(product.RequiredUpgrade))
                 _view.SetMessage($"Requires {product.RequiredUpgrade.DisplayName}");
@@ -168,11 +168,11 @@ namespace ShooterShop.Purchasing
         private void RefreshAmount(ProductConfig product)
         {
             var amount = _amounts[product];
-            _cards[product].SetAmount(amount, $"Buy {FormatMoney(product.BuyPrice * amount)}");
+            _cards[product].SetAmount(amount, $"Buy {FormatMoney(_state.GetPurchaseCost(product, amount))}");
         }
 
-        private static string FormatPrice(ProductConfig product) =>
-            product.IsAmmo ? $"{FormatMoney(product.BuyPrice)} / {product.PackSize} rds" : FormatMoney(product.BuyPrice);
+        private string FormatPrice(ProductConfig product) =>
+            product.IsAmmo ? $"{FormatMoney(_state.GetPurchaseCost(product, 1))} / {product.PackSize} rds" : FormatMoney(_state.GetPurchaseCost(product, 1));
 
         private static string FormatMoney(int amount) => $"${amount:N0}";
     }

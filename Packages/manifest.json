@@ -50,6 +50,16 @@
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0",
-    "com.unity.pipeline": "0.9.0-exp.1"
-  }
+    "com.unity.pipeline": "0.9.0-exp.1",
+    "com.kyrylokuzyk.primetween": "1.4.11"
+  },
+  "scopedRegistries": [
+    {
+      "name": "npm",
+      "url": "https://registry.npmjs.org",
+      "scopes": [
+        "com.kyrylokuzyk"
+      ]
+    }
+  ]
 }

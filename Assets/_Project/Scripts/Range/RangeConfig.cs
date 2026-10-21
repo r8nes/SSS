@@ -25,6 +25,11 @@ namespace ShooterShop.Range
         [BoxGroup("Shooting"), PropertyRange(0, 1)]
         [SerializeField] private float _visitorAccuracy = 0.7f;
 
+        [BoxGroup("Player challenge"), MinValue(5), SuffixLabel("sec")]
+        [InfoBox("A player's first hit on a free lane starts a timed round, best hits are kept as the lane record")]
+        [SerializeField] private float _challengeDuration = 20;
+
+        public float ChallengeDuration => _challengeDuration;
         public int LaneFee => _laneFee;
         public float SessionDuration => _sessionDuration;
         public float VisitorChance => _visitorChance;

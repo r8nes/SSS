@@ -2,7 +2,9 @@ using System.Collections.Generic;
 using Akila.FPSFramework;
 using Mirror;
 using ShooterShop.Catalog;
+using ShooterShop.Feedback;
 using Sirenix.OdinInspector;
+using TMPro;
 using UnityEngine;
 using VContainer;
 
@@ -16,6 +18,15 @@ namespace ShooterShop.Store
         [BoxGroup("Stand"), EnumToggleButtons]
         [SerializeField] private List<ProductCategory> _accepts = new();
 
+        [BoxGroup("Feedback"), Required]
+        [SerializeField] private InteractableOutline _outline;
+
+        [BoxGroup("Feedback"), MinValue(0.5f), SuffixLabel("m")]
+        [SerializeField] private float _flySourceRadius = 4f;
+
+        [BoxGroup("Feedback"), Required, ChildGameObjectsOnly]
+        [SerializeField] private TMP_Text _infoLabel;
+
         [BoxGroup("Layout"), Required, ChildGameObjectsOnly]
         [InfoBox("Where customers stand while picking items")]
         [SerializeField] private Transform _customerPoint;
@@ -24,20 +35,38 @@ namespace ShooterShop.Store
         [SerializeField] private List<Transform> _slots = new();
 
         private readonly SyncList<int> _slotProducts = new();
+
+        [SyncVar(hook = nameof(OnMarkupSynced))]
+        private int _markupPercent;
         private GameObject[] _visuals;
 
         private ProductCatalog _catalog;
         private CarryService _carry;
+        private ItemAnimator _animator;
+        private StoreConfig _config;
+        private bool _isHighlighted;
 
         public Transform CustomerPoint => _customerPoint;
+        public int MarkupPercent => _markupPercent;
+        public bool IsEmpty => FreeSlots == _slotProducts.Count;
         public bool requireHoldToInteract => false;
-        public bool isHighlighted { get; set; }
+        public bool isHighlighted
+        {
+            get => _isHighlighted;
+            set
+            {
+                _isHighlighted = value;
+                _outline.SetVisible(value && !string.IsNullOrEmpty(GetInteractionName()));
+            }
+        }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, CarryService carry)
+        public void Construct(ProductCatalog catalog, CarryService carry, ItemAnimator animator, StoreConfig config)
         {
+            _config = config;
             _catalog = catalog;
             _carry = carry;
+            _animator = animator;
         }
 
         public override void OnStartServer()
@@ -52,7 +81,9 @@ namespace ShooterShop.Store
             _slotProducts.OnChange += OnSlotChanged;
 
             for (var i = 0; i < _slotProducts.Count; i++)
-                RefreshSlot(i);
+                RefreshSlot(i, false);
+
+            RefreshInfo();
         }
 
         public override void OnStopClient() => _slotProducts.OnChange -= OnSlotChanged;
@@ -125,7 +156,7 @@ namespace ShooterShop.Store
             var box = _carry.LocalCarriedBox;
 
             if (box == null || box.Product == null)
-                return string.Empty;
+                return $"{_displayName}: prices {FormatMarkup(_markupPercent)} (change)";
 
             if (!Accepts(box.Product))
                 return $"{_displayName}: not for {box.Product.DisplayName}";
@@ -137,9 +168,28 @@ namespace ShooterShop.Store
         {
             var box = _carry.LocalCarriedBox;
 
-            if (box != null && Accepts(box.Product) && FreeSlots > 0)
+            if (box == null)
+                CmdCycleMarkup();
+            else if (Accepts(box.Product) && FreeSlots > 0)
                 CmdPlaceFrom(box);
         }
+
+        [Command(requiresAuthority = false)]
+        private void CmdCycleMarkup()
+        {
+            var next = _markupPercent + _config.MarkupStep;
+            _markupPercent = next > _config.MaxMarkup ? -_config.MaxMarkup : next;
+        }
+
+        private void OnMarkupSynced(int _, int __) => RefreshInfo();
+
+        private void RefreshInfo()
+        {
+            var prices = $"Prices {FormatMarkup(_markupPercent)}";
+            _infoLabel.text = IsEmpty ? $"<color=#FF7A4D>OUT OF STOCK</color>\n{prices}" : prices;
+        }
+
+        private static string FormatMarkup(int percent) => percent == 0 ? "0%" : $"{percent:+0;-0}%";
 
         [Command(requiresAuthority = false)]
         private void CmdPlaceFrom(DeliveryBox box, NetworkConnectionToClient sender = null)
@@ -161,21 +211,44 @@ namespace ShooterShop.Store
         private void OnSlotChanged(SyncList<int>.Operation _, int index, int __)
         {
             if (index >= 0 && index < _slots.Count)
-                RefreshSlot(index);
+                RefreshSlot(index, true);
             else
                 for (var i = 0; i < _slotProducts.Count; i++)
-                    RefreshSlot(i);
+                    RefreshSlot(i, false);
+
+            RefreshInfo();
         }
 
-        private void RefreshSlot(int index)
+        private void RefreshSlot(int index, bool animate)
         {
+            if (index >= _visuals.Length)
+                return;
+
             if (_visuals[index] != null)
-                Destroy(_visuals[index]);
+            {
+                if (animate)
+                    _animator.Vanish(_visuals[index]);
+                else
+                    Destroy(_visuals[index]);
+            }
 
             _visuals[index] = null;
 
-            if (index < _slotProducts.Count && _catalog.TryGet(_slotProducts[index], out var product) && product.ShelfModel != null)
-                _visuals[index] = Instantiate(product.ShelfModel, _slots[index], false);
+            if (index >= _slotProducts.Count || !_catalog.TryGet(_slotProducts[index], out var product) || product.ShelfModel == null)
+                return;
+
+            var visual = Instantiate(product.ShelfModel, _slots[index], false);
+            _visuals[index] = visual;
+
+            if (!animate)
+                return;
+
+            var source = _carry.FindCarriedNear(_slots[index].position, product, _flySourceRadius);
+
+            if (source != null)
+                _animator.FlyInto(visual.transform, source.transform.position);
+            else
+                _animator.PopIn(visual.transform, Vector3.one);
         }
 
 #if UNITY_EDITOR

@@ -7,6 +7,8 @@ namespace ShooterShop.Customers
         Waiting,
         GoingToLane,
         Shooting,
-        Leaving
+        Leaving,
+        Searching,
+        Delivering
     }
 }

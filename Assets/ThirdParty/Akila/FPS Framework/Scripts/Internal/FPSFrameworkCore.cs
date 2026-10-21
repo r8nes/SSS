@@ -488,6 +488,8 @@ namespace Akila.FPSFramework
         
         public static float FieldOfView { get; set; } = 60;
         public static float WeaponFieldOfView { get; set; } = 60;
+        public static bool IsFieldOfViewOverridden { get; set; }
+        public static bool IsWeaponFieldOfViewOverridden { get; set; }
 
         public static float SensitivityMultiplier { get; set; } = 1;
         public static float XSensitivityMultiplier { get; set; } = 1;

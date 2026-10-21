@@ -13,5 +13,6 @@ namespace ShooterShop.Network
         int Capacity { get; }
         int FreeSpace { get; }
         int GetStock(ProductConfig product);
+        int GetPurchaseCost(ProductConfig product, int amount);
     }
 }

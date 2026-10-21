@@ -21,7 +21,7 @@ namespace ShooterShop.Customers
                 if (_customers[i] == null)
                     _customers.RemoveAt(i);
                 else
-                    _customers[i].TickAnimation(deltaTime);
+                    _customers[i].ClientTick(deltaTime);
             }
         }
     }

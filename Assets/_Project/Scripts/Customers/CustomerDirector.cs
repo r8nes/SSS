@@ -7,6 +7,7 @@ using Mirror;
 using ShooterShop.Catalog;
 using ShooterShop.Days;
 using ShooterShop.Economy;
+using ShooterShop.Feedback;
 using ShooterShop.Range;
 using ShooterShop.Storage;
 using ShooterShop.Store;
@@ -33,6 +34,7 @@ namespace ShooterShop.Customers
         private readonly IDayStatistics _statistics;
         private readonly IUnlocks _unlocks;
         private readonly IObjectResolver _resolver;
+        private readonly IShopFeed _feed;
         private readonly List<Customer> _customers = new();
         private readonly Dictionary<Customer, ShootingLane> _lanes = new();
         private readonly Dictionary<Customer, ProductStand> _stands = new();
@@ -52,6 +54,7 @@ namespace ShooterShop.Customers
             IDayState day,
             IDayStatistics statistics,
             IUnlocks unlocks,
+            IShopFeed feed,
             IObjectResolver resolver)
         {
             _config = config;
@@ -67,6 +70,7 @@ namespace ShooterShop.Customers
             _statistics = statistics;
             _unlocks = unlocks;
             _resolver = resolver;
+            _feed = feed;
         }
 
         public int ActiveCount => _customers.Count;
@@ -80,7 +84,7 @@ namespace ShooterShop.Customers
 
             while (!cancellation.IsCancellationRequested && NetworkServer.active)
             {
-                var interval = Random.Range(_config.SpawnInterval.x, _config.SpawnInterval.y);
+                var interval = Random.Range(_config.SpawnInterval.x, _config.SpawnInterval.y) / (_day.CurrentEvent?.SpawnRateMultiplier ?? 1f);
 
                 if (await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation).SuppressCancellationThrow())
                     return;
@@ -111,9 +115,14 @@ namespace ShooterShop.Customers
             if (!_warehouse.TryRemove(request.Product, request.Amount))
                 return false;
 
+            var tip = TipFor(customer, request);
+            var income = request.Price + tip;
+            var popupPoint = customer.transform.position + Vector3.up * 2.2f;
+
             _holdingItems.Remove(customer);
-            _wallet.Add(request.Price);
-            _statistics.RecordSale(request.Price, request.IsRangeVisit);
+            _wallet.Add(income);
+            _statistics.RecordSale(income, request.IsRangeVisit);
+            _feed.Popup(popupPoint, tip > 0 ? $"+${request.Price:N0}  <size=70%>+${tip:N0} tip</size>" : $"+${request.Price:N0}");
 
             if (_lanes.TryGetValue(customer, out var lane))
                 SendToLane(customer, lane);
@@ -135,7 +144,7 @@ namespace ShooterShop.Customers
             {
                 var customer = _customers[i];
 
-                if (customer != null && customer.State is CustomerState.Browsing or CustomerState.Arriving or CustomerState.Waiting)
+                if (customer != null && customer.State is CustomerState.Browsing or CustomerState.Arriving or CustomerState.Waiting or CustomerState.Searching)
                     Leave(customer);
             }
         }
@@ -153,10 +162,16 @@ namespace ShooterShop.Customers
                 case CustomerState.Browsing when customer.ServerTickArrival():
                     PickFromStand(customer);
                     break;
+                case CustomerState.Searching:
+                    TickSearching(customer);
+                    break;
                 case CustomerState.Arriving when customer.ServerTickArrival():
                     customer.ServerSetState(CustomerState.Waiting);
+                    customer.ServerStartPatience(_config.Patience);
                     break;
-                case CustomerState.Waiting when Time.time - customer.WaitingSince > _config.Patience:
+                case CustomerState.Waiting when customer.PatienceLeft <= 0f:
+                    _feed.Notify("A customer got tired of waiting and left", NotificationKind.Warning);
+                    _feed.Popup(customer.transform.position + Vector3.up * 2.2f, "Too slow!", NotificationKind.Warning);
                     Leave(customer);
                     break;
                 case CustomerState.Waiting:
@@ -200,19 +215,70 @@ namespace ShooterShop.Customers
                 return;
 
             var request = customer.Request;
-            var taken = _stands[customer].ServerTake(request.Product, request.Amount);
+            var stand = _stands[customer];
 
-            if (taken == 0)
+            if (stand.CountOf(request.Product) == 0)
             {
+                StartSearching(customer, request.Product);
+                return;
+            }
+
+            var markup = stand.MarkupPercent;
+
+            if (markup > 0 && Random.value < markup * _config.PriceSensitivity)
+            {
+                _feed.Notify($"A customer found {request.Product.DisplayName} too expensive", NotificationKind.Warning);
+                _feed.Popup(customer.transform.position + Vector3.up * 2.2f, "Too expensive!", NotificationKind.Warning);
                 Leave(customer);
                 return;
             }
 
+            var wanted = markup < 0 && Random.value < -markup * _config.PriceSensitivity ? request.Amount + 1 : request.Amount;
+            var taken = stand.ServerTake(request.Product, wanted);
+
             _holdingItems.Add(customer);
+            customer.ServerSetMarkup(markup);
             customer.ServerSetAmount(taken);
             customer.ServerSetState(CustomerState.Arriving);
             _queue.Add(customer);
             MoveToQueuePosition(customer, _queue.Count - 1);
+        }
+
+        private void StartSearching(Customer customer, ProductConfig product)
+        {
+            if (customer.State == CustomerState.Searching)
+                return;
+
+            customer.ServerSetState(CustomerState.Searching);
+            customer.ServerStartPatience(_config.SearchPatience);
+            _feed.Notify($"A customer is waiting for {product.DisplayName} on the stand", NotificationKind.Warning);
+        }
+
+        private void TickSearching(Customer customer)
+        {
+            var product = customer.Request.Product;
+
+            if (_stands.TryGetValue(customer, out var stand) && stand.CountOf(product) > 0)
+            {
+                PickFromStand(customer);
+                return;
+            }
+
+            if (customer.PatienceLeft > 0f)
+                return;
+
+            _feed.Notify($"A customer left without {product.DisplayName}", NotificationKind.Warning);
+            Leave(customer);
+        }
+
+        private int TipFor(Customer customer, CustomerRequest request)
+        {
+            if (_config.TipWindow <= 0f)
+                return 0;
+
+            var waited = Time.time - customer.WaitingSince;
+            var share = Mathf.Clamp01(1f - waited / _config.TipWindow) * _config.MaxTipShare;
+            return Mathf.RoundToInt(request.GoodsPrice * share);
         }
 
         private void SendToLane(Customer customer, ShootingLane lane)
@@ -300,12 +366,16 @@ namespace ShooterShop.Customers
         {
             var ammo = _catalog.Products.Where(p => p.IsAmmo && _unlocks.IsUnlocked(p.RequiredUpgrade)).ToList();
 
-            if (ammo.Count > 0 && Random.value < _rangeConfig.VisitorChance && _range.TryReserveLane(out var lane))
+            var dayEvent = _day.CurrentEvent;
+            var visitorChance = _rangeConfig.VisitorChance * (dayEvent?.VisitorChanceMultiplier ?? 1f);
+
+            if (ammo.Count > 0 && Random.value < visitorChance && _range.TryReserveLane(out var lane))
             {
                 _lanes[customer] = lane;
                 var product = PickProduct(ammo);
                 var boxes = Random.Range(1, _rangeConfig.MaxAmmoBoxes + 1);
-                return new CustomerRequest(product, boxes, _rangeConfig.LaneFee);
+                var fee = Mathf.RoundToInt(_rangeConfig.LaneFee * (dayEvent?.LaneFeeMultiplier ?? 1f));
+                return new CustomerRequest(product, boxes, fee);
             }
 
             var shopProduct = PickProduct(_catalog.Products);
@@ -318,7 +388,28 @@ namespace ShooterShop.Customers
             var pool = candidates.Where(p => _unlocks.IsUnlocked(p.RequiredUpgrade)).ToList();
             var onShelves = pool.Where(p => OnShelves(p) > 0).ToList();
             var source = onShelves.Count > 0 && Random.value < _config.InStockRequestChance ? onShelves : pool;
-            return source[Random.Range(0, source.Count)];
+            return PickWeighted(source);
+        }
+
+        private ProductConfig PickWeighted(IReadOnlyList<ProductConfig> source)
+        {
+            var dayEvent = _day.CurrentEvent;
+
+            if (dayEvent == null)
+                return source[Random.Range(0, source.Count)];
+
+            var total = source.Sum(p => dayEvent.DemandWeightOf(p.Category));
+            var roll = Random.value * total;
+
+            foreach (var product in source)
+            {
+                roll -= dayEvent.DemandWeightOf(product.Category);
+
+                if (roll <= 0f)
+                    return product;
+            }
+
+            return source[source.Count - 1];
         }
     }
 }

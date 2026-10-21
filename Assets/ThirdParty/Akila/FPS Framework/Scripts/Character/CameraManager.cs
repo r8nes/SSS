@@ -1,4 +1,4 @@
-﻿using Akila.FPSFramework.Animation;
+using Akila.FPSFramework.Animation;
 using System;
 using UnityEngine;
 
@@ -36,19 +36,11 @@ namespace Akila.FPSFramework
             if (cameraShaker == null)
                 cameraShaker = transform.SearchFor<CameraShaker>();
 
-            //Apply default field of view if there's a settings manager in scene
-            if (SettingsManager.Instance)
-            {
-                if (mainCamera != null)
-                {
-                    mainCamera.fieldOfView = FPSFrameworkCore.FieldOfView;
-                }
+            if (mainCamera != null && FPSFrameworkCore.IsFieldOfViewOverridden)
+                mainCamera.fieldOfView = FPSFrameworkCore.FieldOfView;
 
-                if (overlayCamera != null)
-                {
-                    overlayCamera.fieldOfView = FPSFrameworkCore.WeaponFieldOfView;
-                }
-            }
+            if (overlayCamera != null && FPSFrameworkCore.IsWeaponFieldOfViewOverridden)
+                overlayCamera.fieldOfView = FPSFrameworkCore.WeaponFieldOfView;
 
             if (mainCamera)
                 defaultMainFOV = mainCamera.fieldOfView;
@@ -71,11 +63,11 @@ namespace Akila.FPSFramework
 
         private void Update()
         {
-            if (SettingsManager.Instance)
-            {
+            if (FPSFrameworkCore.IsFieldOfViewOverridden)
                 defaultMainFOV = FPSFrameworkCore.FieldOfView;
+
+            if (FPSFrameworkCore.IsWeaponFieldOfViewOverridden)
                 defaultOverlayFOV = FPSFrameworkCore.WeaponFieldOfView;
-            }
 
             mainCurrentFOV = Mathf.SmoothDamp(mainCurrentFOV, mainTargetFOV, ref mainCurrentFOVVelcoity, fieldOfViewSmoothTime * fovSmoothTimeMultiplier);
             overlayCurrentFOV = Mathf.SmoothDamp(overlayCurrentFOV, overlayTargetFOV, ref overlayCurrentFOVVelcoity, fieldOfViewSmoothTime * fovSmoothTimeMultiplier);

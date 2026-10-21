@@ -18,6 +18,10 @@ namespace ShooterShop.Customers
         [BoxGroup("Behaviour"), MinValue(5), SuffixLabel("sec")]
         [SerializeField] private float _patience = 45;
 
+        [BoxGroup("Behaviour"), MinValue(5), SuffixLabel("sec")]
+        [InfoBox("How long a customer waits at an empty stand for the item to be restocked")]
+        [SerializeField] private float _searchPatience = 25;
+
         [BoxGroup("Behaviour"), MinValue(0.5f), SuffixLabel("m/s")]
         [SerializeField] private float _walkSpeed = 2.5f;
 
@@ -31,7 +35,22 @@ namespace ShooterShop.Customers
         [BoxGroup("Requests"), MinValue(1)]
         [SerializeField] private int _maxAmmoAmount = 4;
 
+        [BoxGroup("Tips"), MinValue(0), SuffixLabel("sec")]
+        [InfoBox("Customers served within this time after reaching the line leave a tip, smaller the longer they waited")]
+        [SerializeField] private float _tipWindow = 15;
+
+        [BoxGroup("Tips"), PropertyRange(0, 1)]
+        [SerializeField] private float _maxTipShare = 0.2f;
+
+        [BoxGroup("Prices"), PropertyRange(0, 0.05f)]
+        [InfoBox("Per 1% of stand markup: chance to refuse when above zero, chance to take one more when below")]
+        [SerializeField] private float _priceSensitivity = 0.015f;
+
         public Customer Prefab => _prefab;
+        public float SearchPatience => _searchPatience;
+        public float TipWindow => _tipWindow;
+        public float MaxTipShare => _maxTipShare;
+        public float PriceSensitivity => _priceSensitivity;
         public Vector2 SpawnInterval => _spawnInterval;
         public int MaxCustomers => _maxCustomers;
         public float Patience => _patience;

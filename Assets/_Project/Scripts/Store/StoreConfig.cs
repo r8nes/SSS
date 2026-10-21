@@ -1,4 +1,6 @@
+using ShooterShop.Customers;
 using Sirenix.OdinInspector;
+using UnityEngine.InputSystem;
 using UnityEngine;
 
 namespace ShooterShop.Store
@@ -11,6 +13,13 @@ namespace ShooterShop.Store
 
         [BoxGroup("Delivery"), MinValue(0), SuffixLabel("sec")]
         [SerializeField] private float _deliveryDelay = 3f;
+
+        [BoxGroup("Delivery"), Required, AssetsOnly]
+        [InfoBox("Walks from the street entrance to the delivery point and drops the boxes")]
+        [SerializeField] private Customer _courierPrefab;
+
+        [BoxGroup("Delivery"), MinValue(0.5f), SuffixLabel("m/s")]
+        [SerializeField] private float _courierSpeed = 3f;
 
         [BoxGroup("Delivery"), MinValue(0.3f), SuffixLabel("m")]
         [SerializeField] private float _boxSpacing = 0.7f;
@@ -28,7 +37,29 @@ namespace ShooterShop.Store
         [BoxGroup("Carrying")]
         [SerializeField] private LayerMask _dropSurfaces = ~0;
 
+        [BoxGroup("Carrying")]
+        [SerializeField] private Key _dropKey = Key.G;
+
+        [BoxGroup("Carrying")]
+        [SerializeField] private Key _throwKey = Key.T;
+
+        [BoxGroup("Carrying"), MinValue(1), SuffixLabel("m/s")]
+        [SerializeField] private float _throwSpeed = 7f;
+
+        [BoxGroup("Prices"), MinValue(1), SuffixLabel("%")]
+        [SerializeField] private int _markupStep = 10;
+
+        [BoxGroup("Prices"), MinValue(0), SuffixLabel("%")]
+        [SerializeField] private int _maxMarkup = 30;
+
         public DeliveryBox BoxPrefab => _boxPrefab;
+        public Customer CourierPrefab => _courierPrefab;
+        public float CourierSpeed => _courierSpeed;
+        public Key DropKey => _dropKey;
+        public Key ThrowKey => _throwKey;
+        public float ThrowSpeed => _throwSpeed;
+        public int MarkupStep => _markupStep;
+        public int MaxMarkup => _maxMarkup;
         public float DeliveryDelay => _deliveryDelay;
         public float BoxSpacing => _boxSpacing;
         public string HoldPivotPath => _holdPivotPath;

@@ -97,7 +97,7 @@ namespace Akila.FPSFramework
         private void Start()
         { 
             cachedBindingDisplayString =
-                CharacterInput.controls.Player.Interact.GetBindingDisplayString();
+                CharacterInput.controls.Player.Interact.GetBindingDisplayString(InputBinding.MaskByGroup("Keyboard&Mouse"));
         }
 
         private void OnEnable()
@@ -221,7 +221,7 @@ namespace Akila.FPSFramework
             {
                 foreach (var mb in col.GetComponents<MonoBehaviour>())
                 {
-                    if (mb is not IInteractable interactable)
+                    if (mb is not IInteractable interactable || string.IsNullOrEmpty(interactable.GetInteractionName()))
                         continue;
 
                     Vector3 dir =
@@ -288,7 +288,7 @@ namespace Akila.FPSFramework
             {
                 foreach (var mb in col.GetComponents<MonoBehaviour>())
                 {
-                    if (mb is not IInteractable interactable)
+                    if (mb is not IInteractable interactable || string.IsNullOrEmpty(interactable.GetInteractionName()))
                         continue;
 
                     Vector3 targetPos =

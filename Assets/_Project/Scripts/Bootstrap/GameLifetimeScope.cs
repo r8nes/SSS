@@ -2,6 +2,7 @@ using ShooterShop.Catalog;
 using ShooterShop.Customers;
 using ShooterShop.Days;
 using ShooterShop.Economy;
+using ShooterShop.Feedback;
 using ShooterShop.Hud;
 using ShooterShop.Input;
 using ShooterShop.Loading;
@@ -67,8 +68,26 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private StoreConfig _storeConfig;
 
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private FeedbackConfig _feedbackConfig;
+
         [BoxGroup("Store"), Required, SceneObjectsOnly]
         [SerializeField] private StoreLayout _storeLayout;
+
+        [BoxGroup("Days"), Required, SceneObjectsOnly]
+        [SerializeField] private ShopOpenSign _shopOpenSign;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private DayEventCatalog _dayEventCatalog;
+
+        [BoxGroup("Network"), Required, SceneObjectsOnly]
+        [SerializeField] private ShopFeed _shopFeed;
+
+        [BoxGroup("Hud"), Required, SceneObjectsOnly]
+        [SerializeField] private NotificationView _notificationView;
+
+        [BoxGroup("Hud")]
+        [SerializeField] private WorldMarkerSet _worldMarkers = new();
 
         [BoxGroup("Hud"), Required, SceneObjectsOnly]
         [SerializeField] private MoneyHudView _moneyHudView;
@@ -91,6 +110,14 @@ namespace ShooterShop.Bootstrap
             builder.Register<Warehouse>(Lifetime.Singleton).As<IWarehouse>();
             builder.RegisterComponent(_shopNetworkState).As<IShopState, IShopCommands>();
 
+            builder.RegisterComponent(_shopFeed).As<IShopFeed, IShopFeedEvents>();
+            builder.RegisterComponent(_notificationView);
+            builder.RegisterEntryPoint<NotificationPresenter>();
+            builder.RegisterEntryPoint<WorldPopupSpawner>();
+            builder.RegisterInstance(_worldMarkers);
+            builder.RegisterEntryPoint<WorldMarkerPresenter>();
+
+            builder.RegisterInstance(_dayEventCatalog);
             builder.RegisterInstance(_dayConfig);
             builder.RegisterComponent(_dayNetworkState).AsSelf().As<IDayState, IDayStatistics, IDayCommands>();
             builder.RegisterEntryPoint<DayCycle>();
@@ -115,6 +142,9 @@ namespace ShooterShop.Bootstrap
             builder.RegisterInstance(new InjectedPrefabs(_customerConfig.Prefab.gameObject, _storeConfig.BoxPrefab.gameObject));
             builder.RegisterEntryPoint<InjectedPrefabRegistrar>();
 
+            builder.RegisterInstance(_feedbackConfig);
+            builder.Register<ItemAnimator>(Lifetime.Singleton);
+
             builder.RegisterInstance(_storeConfig);
             builder.RegisterComponent(_storeLayout);
             builder.Register<CarryService>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
@@ -124,6 +154,8 @@ namespace ShooterShop.Bootstrap
             {
                 foreach (var stand in _storeLayout.Stands)
                     container.Inject(stand);
+
+                container.Inject(_shopOpenSign);
             });
             builder.Register<CustomerRegistry>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
 

@@ -3,6 +3,7 @@ using Akila.FPSFramework;
 using Mirror;
 using System.Collections.Generic;
 using ShooterShop.Catalog;
+using ShooterShop.Feedback;
 using ShooterShop.Range;
 using Sirenix.OdinInspector;
 using TMPro;
@@ -20,11 +21,33 @@ namespace ShooterShop.Customers
         [Required]
         [SerializeField] private TMP_Text _label;
 
+        [Required]
+        [SerializeField] private InteractableOutline _outline;
+
         [BoxGroup("Animation"), Required]
         [SerializeField] private Animator _animator;
 
         [BoxGroup("Animation"), MinValue(1)]
         [SerializeField] private float _animationSmoothing = 10f;
+
+        [BoxGroup("Animation"), MinValue(0.1f)]
+        [InfoBox("Blend tree MoveY value of the walk clip")]
+        [SerializeField] private float _walkBlendValue = 5f;
+
+        [BoxGroup("Patience"), Required, ChildGameObjectsOnly]
+        [SerializeField] private GameObject _patienceBar;
+
+        [BoxGroup("Patience"), Required, ChildGameObjectsOnly]
+        [SerializeField] private Transform _patienceFill;
+
+        [BoxGroup("Patience"), Required, ChildGameObjectsOnly]
+        [SerializeField] private Renderer _patienceFillRenderer;
+
+        [BoxGroup("Patience")]
+        [SerializeField] private Gradient _patienceColors = new();
+
+        [BoxGroup("Request"), Required, ChildGameObjectsOnly]
+        [SerializeField] private SpriteRenderer _requestIcon;
 
         [BoxGroup("Range"), ChildGameObjectsOnly]
         [SerializeField] private List<GameObject> _weaponParts = new();
@@ -50,12 +73,28 @@ namespace ShooterShop.Customers
         [SyncVar]
         private int _queuePosition = -1;
 
+        [SyncVar]
+        private float _walkSpeed = 1f;
+
+        [SyncVar(hook = nameof(OnRequestSynced))]
+        private int _markupPercent;
+
+        [SyncVar]
+        private double _patienceStartedAt;
+
+        [SyncVar]
+        private float _patienceDuration;
+
         private ProductCatalog _catalog;
         private ICustomerInteraction _interaction;
         private CustomerRegistry _registry;
         private Vector3 _lastPosition;
         private Vector2 _move;
         private Quaternion? _arrivalRotation;
+        private bool _isHighlighted;
+        private MaterialPropertyBlock _patienceBlock;
+
+        private static readonly int BaseColor = Shader.PropertyToID("_BaseColor");
 
         private static readonly int MoveX = Animator.StringToHash("MoveX");
         private static readonly int MoveY = Animator.StringToHash("MoveY");
@@ -66,6 +105,7 @@ namespace ShooterShop.Customers
         public CustomerState State => _state;
         public NavMeshAgent Agent => _agent;
         public float WaitingSince { get; private set; }
+        public float PatienceLeft => _patienceDuration <= 0f ? float.MaxValue : _patienceDuration - (float)(NetworkTime.time - _patienceStartedAt);
         public int QueuePosition => _queuePosition;
         public bool IsInQueue => _queuePosition >= 0;
         public bool CanBeServed => _state == CustomerState.Waiting && _queuePosition == 0 && HasRequest;
@@ -73,10 +113,18 @@ namespace ShooterShop.Customers
         public bool HasRequest => _catalog != null && _catalog.TryGet(_productIndex, out _);
 
         public CustomerRequest Request =>
-            _catalog.TryGet(_productIndex, out var product) ? new CustomerRequest(product, _amount, _laneFee) : default;
+            _catalog.TryGet(_productIndex, out var product) ? new CustomerRequest(product, _amount, _laneFee, _markupPercent) : default;
 
         public bool requireHoldToInteract => false;
-        public bool isHighlighted { get; set; }
+        public bool isHighlighted
+        {
+            get => _isHighlighted;
+            set
+            {
+                _isHighlighted = value;
+                _outline.SetVisible(value && CanBeServed);
+            }
+        }
 
         [Inject]
         public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry)
@@ -98,19 +146,22 @@ namespace ShooterShop.Customers
             _registry.Add(this);
             RefreshWeapon();
             RefreshLabel();
+            RefreshPatience();
         }
 
         public override void OnStopClient() => _registry.Remove(this);
 
-        public void TickAnimation(float deltaTime)
+        public void ClientTick(float deltaTime)
         {
             if (deltaTime <= 0f)
                 return;
 
+            TickPatience();
+
             var velocity = (transform.position - _lastPosition) / deltaTime;
             _lastPosition = transform.position;
 
-            var local = transform.InverseTransformDirection(velocity);
+            var local = transform.InverseTransformDirection(velocity) * (_walkBlendValue / Mathf.Max(0.1f, _walkSpeed));
             _move = Vector2.Lerp(_move, new Vector2(local.x, local.z), deltaTime * _animationSmoothing);
             _animator.SetFloat(MoveX, _move.x);
             _animator.SetFloat(MoveY, _move.y);
@@ -123,7 +174,17 @@ namespace ShooterShop.Customers
             _amount = request.Amount;
             _laneFee = request.LaneFee;
             _agent.speed = speed;
+            _walkSpeed = speed;
             ServerSetState(CustomerState.Arriving);
+        }
+
+        [Server]
+        public void ServerInitializeCourier(float speed)
+        {
+            _productIndex = -1;
+            _agent.speed = speed;
+            _walkSpeed = speed;
+            ServerSetState(CustomerState.Delivering);
         }
 
         [Server]
@@ -134,6 +195,8 @@ namespace ShooterShop.Customers
             if (state == CustomerState.Waiting)
                 WaitingSince = Time.time;
 
+            _patienceDuration = 0f;
+            RefreshPatience();
             RefreshLabel();
             RefreshWeapon();
             StateChanged?.Invoke(this);
@@ -147,6 +210,17 @@ namespace ShooterShop.Customers
 
         [Server]
         public void ServerSetAmount(int amount) => _amount = amount;
+
+        [Server]
+        public void ServerSetMarkup(int markupPercent) => _markupPercent = markupPercent;
+
+        [Server]
+        public void ServerStartPatience(float duration)
+        {
+            _patienceStartedAt = NetworkTime.time;
+            _patienceDuration = duration;
+            RefreshPatience();
+        }
 
         [Server]
         public void ServerMoveTo(Vector3 destination, Quaternion? arrivalRotation = null)
@@ -187,6 +261,7 @@ namespace ShooterShop.Customers
 
         private void OnStateSynced(CustomerState _, CustomerState __)
         {
+            RefreshPatience();
             RefreshLabel();
             RefreshWeapon();
 
@@ -215,14 +290,46 @@ namespace ShooterShop.Customers
                 _animator.SetLayerWeight(layer, isShooting ? 1f : 0f);
         }
 
+        private void RefreshPatience() =>
+            _patienceBar.SetActive(_state is CustomerState.Waiting or CustomerState.Searching);
+
+        private void TickPatience()
+        {
+            if (!_patienceBar.activeSelf)
+                return;
+
+            var camera = Camera.main;
+
+            if (camera != null)
+                _patienceBar.transform.rotation = camera.transform.rotation;
+
+            var share = _patienceDuration > 0f ? Mathf.Clamp01(PatienceLeft / _patienceDuration) : 1f;
+            var scale = _patienceFill.localScale;
+            scale.x = share;
+            _patienceFill.localScale = scale;
+            _patienceFill.localPosition = new Vector3((share - 1f) * 0.5f, 0f, 0f);
+
+            _patienceBlock ??= new MaterialPropertyBlock();
+            _patienceBlock.SetColor(BaseColor, _patienceColors.Evaluate(share));
+            _patienceFillRenderer.SetPropertyBlock(_patienceBlock);
+        }
+
         private void RefreshLabel()
         {
             if (_catalog == null)
                 return;
 
+            var isSearching = _state == CustomerState.Searching && HasRequest;
+            _requestIcon.gameObject.SetActive(isSearching && Request.Product.Icon != null);
+
+            if (isSearching)
+                _requestIcon.sprite = Request.Product.Icon;
+
             _label.text = _state switch
             {
-                CustomerState.Waiting when HasRequest => Request.Describe(),
+                CustomerState.Searching when HasRequest => $"Needs {Request.Product.DisplayName}!",
+                CustomerState.Delivering => "Delivery",
+                CustomerState.Waiting when HasRequest => $"{Request.Describe()}  ${Request.Price:N0}",
                 CustomerState.Browsing when HasRequest => $"Looking for {Request.Product.DisplayName}",
                 CustomerState.Arriving when HasRequest => Request.Describe(),
                 _ => string.Empty

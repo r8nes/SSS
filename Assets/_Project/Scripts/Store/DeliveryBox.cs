@@ -1,6 +1,7 @@
 using Akila.FPSFramework;
 using Mirror;
 using ShooterShop.Catalog;
+using ShooterShop.Feedback;
 using Sirenix.OdinInspector;
 using TMPro;
 using UnityEngine;
@@ -16,6 +17,9 @@ namespace ShooterShop.Store
         [Required]
         [SerializeField] private TMP_Text _label;
 
+        [Required]
+        [SerializeField] private InteractableOutline _outline;
+
         [SyncVar(hook = nameof(OnContentSynced))]
         private int _productIndex = -1;
 
@@ -25,6 +29,15 @@ namespace ShooterShop.Store
         [SyncVar(hook = nameof(OnCarrierSynced))]
         private uint _carrierNetId;
 
+        [SyncVar]
+        private bool _wasThrown;
+
+        [SyncVar]
+        private Vector3 _throwOrigin;
+
+        [SyncVar]
+        private float _throwDuration;
+
         [SyncVar(hook = nameof(OnRestPositionSynced))]
         private Vector3 _restPosition;
 
@@ -33,6 +46,8 @@ namespace ShooterShop.Store
 
         private ProductCatalog _catalog;
         private CarryService _carry;
+        private ItemAnimator _animator;
+        private bool _isHighlighted;
 
         public uint CarrierNetId => _carrierNetId;
         public bool IsCarried => _carrierNetId != 0;
@@ -40,13 +55,22 @@ namespace ShooterShop.Store
         public ProductConfig Product => _catalog != null && _catalog.TryGet(_productIndex, out var product) ? product : null;
 
         public bool requireHoldToInteract => false;
-        public bool isHighlighted { get; set; }
+        public bool isHighlighted
+        {
+            get => _isHighlighted;
+            set
+            {
+                _isHighlighted = value;
+                _outline.SetVisible(value && !IsCarried);
+            }
+        }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, CarryService carry)
+        public void Construct(ProductCatalog catalog, CarryService carry, ItemAnimator animator)
         {
             _catalog = catalog;
             _carry = carry;
+            _animator = animator;
         }
 
         public override void OnStartClient()
@@ -55,6 +79,7 @@ namespace ShooterShop.Store
             ApplyRest();
             RefreshCarried();
             RefreshLabel();
+            _animator.PopIn(transform, transform.localScale);
         }
 
         public override void OnStopClient() => _carry.Unregister(this);
@@ -90,6 +115,23 @@ namespace ShooterShop.Store
 
         public void RequestDrop() => CmdDrop();
 
+        public void RequestThrow(Vector3 direction) => CmdThrow(direction);
+
+        [Command(requiresAuthority = false)]
+        private void CmdThrow(Vector3 direction, NetworkConnectionToClient sender = null)
+        {
+            if (sender?.identity == null || sender.identity.netId != _carrierNetId)
+                return;
+
+            var (position, rotation, duration) = _carry.FindThrowPose(this, direction);
+            _wasThrown = true;
+            _throwOrigin = transform.position;
+            _throwDuration = duration;
+            _carrierNetId = 0;
+            _restRotation = rotation;
+            _restPosition = position;
+        }
+
         [Command(requiresAuthority = false)]
         private void CmdPickUp(NetworkConnectionToClient sender = null)
         {
@@ -106,21 +148,46 @@ namespace ShooterShop.Store
                 return;
 
             var (position, rotation) = _carry.FindDropPose(this);
+            _wasThrown = false;
             _carrierNetId = 0;
-            _restPosition = position;
             _restRotation = rotation;
-            ApplyRest();
+            _restPosition = position;
         }
 
         private void OnContentSynced(int _, int __) => RefreshLabel();
 
-        private void OnCarrierSynced(uint _, uint __) => RefreshCarried();
+        private void OnCarrierSynced(uint _, uint __)
+        {
+            RefreshCarried();
 
-        private void OnRestPositionSynced(Vector3 _, Vector3 __) => ApplyRest();
+            if (IsCarried)
+                _animator.Punch(transform);
+        }
 
-        private void OnRestRotationSynced(Quaternion _, Quaternion __) => ApplyRest();
+        private void OnRestPositionSynced(Vector3 _, Vector3 position)
+        {
+            if (IsCarried)
+                return;
 
-        private void RefreshCarried() => _collider.enabled = !IsCarried;
+            if (_wasThrown)
+                _animator.Throw(transform, _throwOrigin, position, _throwDuration);
+            else
+                _animator.Land(transform, transform.position, position);
+        }
+
+        private void OnRestRotationSynced(Quaternion _, Quaternion rotation)
+        {
+            if (!IsCarried)
+                transform.rotation = rotation;
+        }
+
+        private void RefreshCarried()
+        {
+            _collider.enabled = !IsCarried;
+
+            if (IsCarried)
+                _outline.SetVisible(false);
+        }
 
         private void ApplyRest()
         {

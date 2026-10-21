@@ -9,6 +9,10 @@ namespace ShooterShop.Days
         [MinValue(30), SuffixLabel("sec")]
         [SerializeField] private float _openDuration = 300;
 
+        [MinValue(5), SuffixLabel("sec")]
+        [SerializeField] private float _closingWarning = 60;
+
         public float OpenDuration => _openDuration;
+        public float ClosingWarning => _closingWarning;
     }
 }

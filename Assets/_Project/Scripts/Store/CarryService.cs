@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Mirror;
+using ShooterShop.Catalog;
 using ShooterShop.Input;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -31,6 +32,37 @@ namespace ShooterShop.Store
 
         public bool IsCarrying(uint netId) => FindCarried(netId) != null;
 
+        public bool HasLooseBoxesNear(Vector3 position, float radius)
+        {
+            foreach (var box in _boxes)
+                if (box != null && !box.IsCarried && Vector3.Distance(box.transform.position, position) <= radius)
+                    return true;
+
+            return false;
+        }
+
+        public DeliveryBox FindCarriedNear(Vector3 position, ProductConfig product, float radius)
+        {
+            DeliveryBox closest = null;
+            var bestDistance = radius;
+
+            foreach (var box in _boxes)
+            {
+                if (box == null || !box.IsCarried || box.Product != product)
+                    continue;
+
+                var distance = Vector3.Distance(box.transform.position, position);
+
+                if (distance <= bestDistance)
+                {
+                    bestDistance = distance;
+                    closest = box;
+                }
+            }
+
+            return closest;
+        }
+
         public void Tick()
         {
             for (var i = _boxes.Count - 1; i >= 0; i--)
@@ -43,8 +75,18 @@ namespace ShooterShop.Store
                     Follow(box);
             }
 
-            if (!_inputLock.IsLocked && Keyboard.current != null && Keyboard.current.gKey.wasPressedThisFrame)
-                LocalCarriedBox?.RequestDrop();
+            if (_inputLock.IsLocked || Keyboard.current == null)
+                return;
+
+            var carried = LocalCarriedBox;
+
+            if (carried == null)
+                return;
+
+            if (Keyboard.current[_config.DropKey].wasPressedThisFrame)
+                carried.RequestDrop();
+            else if (Keyboard.current[_config.ThrowKey].wasPressedThisFrame && FindPivot(LocalPlayerNetId) is { } pivot)
+                carried.RequestThrow(pivot.forward);
         }
 
         public (Vector3 Position, Quaternion Rotation) FindDropPose(DeliveryBox box)
@@ -57,6 +99,41 @@ namespace ShooterShop.Store
                 ? (hit.point + Vector3.up * halfHeight, rotation)
                 : (box.transform.position, rotation);
         }
+
+        public (Vector3 Position, Quaternion Rotation, float Duration) FindThrowPose(DeliveryBox box, Vector3 direction)
+        {
+            const float step = 0.03f;
+            const float maxTime = 3f;
+
+            var halfHeight = box.transform.lossyScale.y * 0.5f;
+            var rotation = Quaternion.Euler(0f, box.transform.eulerAngles.y, 0f);
+            var position = box.transform.position;
+            var velocity = direction.normalized * _config.ThrowSpeed;
+
+            for (var time = 0f; time < maxTime; time += step)
+            {
+                var next = position + velocity * step;
+                velocity += Physics.gravity * step;
+                var segment = next - position;
+
+                if (Physics.Raycast(position, segment.normalized, out var hit, segment.magnitude, _config.DropSurfaces, QueryTriggerInteraction.Ignore))
+                {
+                    var landing = hit.point + hit.normal * 0.05f;
+                    var (floor, _) = FindDropPoseAt(landing, rotation, halfHeight);
+                    return (floor, rotation, Mathf.Max(0.15f, time));
+                }
+
+                position = next;
+            }
+
+            var (fallback, _) = FindDropPoseAt(position, rotation, halfHeight);
+            return (fallback, rotation, maxTime);
+        }
+
+        private (Vector3 Position, Quaternion Rotation) FindDropPoseAt(Vector3 origin, Quaternion rotation, float halfHeight) =>
+            Physics.Raycast(origin + Vector3.up * 0.2f, Vector3.down, out var hit, _config.DropRayLength, _config.DropSurfaces, QueryTriggerInteraction.Ignore)
+                ? (hit.point + Vector3.up * halfHeight, rotation)
+                : (origin, rotation);
 
         private DeliveryBox FindCarried(uint netId)
         {

@@ -14,6 +14,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Store.StoreConfig
   _boxPrefab: {fileID: 3328692377836531151, guid: 5cda556e454a258408e0f1847932f86c, type: 3}
   _deliveryDelay: 3
+  _courierPrefab: {fileID: 5323634444032062624, guid: fecc3d41d78fada4ea8526696cf18407, type: 3}
+  _courierSpeed: 3
   _boxSpacing: 0.7
   _holdPivotPath: CameraRoot/CameraPivot
   _holdOffset: {x: 0, y: -0.45, z: 0.8}
@@ -21,3 +23,8 @@ MonoBehaviour:
   _dropSurfaces:
     serializedVersion: 2
     m_Bits: 4294967295
+  _dropKey: 21
+  _throwKey: 34
+  _throwSpeed: 7
+  _markupStep: 10
+  _maxMarkup: 30

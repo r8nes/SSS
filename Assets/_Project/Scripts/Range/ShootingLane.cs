@@ -43,6 +43,14 @@ namespace ShooterShop.Range
         [SyncVar]
         private int _hits;
 
+        [SyncVar]
+        private double _challengeEndTime;
+
+        [SyncVar]
+        private int _record;
+
+        private float _challengeDuration = 20f;
+
         private MaterialPropertyBlock _propertyBlock;
         private float _flashUntil = -1f;
         private string _shownText;
@@ -50,6 +58,7 @@ namespace ShooterShop.Range
         private static readonly int BaseColor = Shader.PropertyToID("_BaseColor");
 
         public event Action<ShootingLane> SessionFinished;
+        public event Action<ShootingLane, int> RecordSet;
 
         public Transform StandPoint => _standPoint;
         public Transform Target => _target.transform;
@@ -58,6 +67,9 @@ namespace ShooterShop.Range
         public bool IsAvailable => !_isOccupied && !IsReserved;
         public int Number => _number;
         public UpgradeConfig RequiredUpgrade => _requiredUpgrade;
+        private bool IsChallengeRunning => _challengeEndTime > 0;
+
+        public void Configure(float challengeDuration) => _challengeDuration = challengeDuration;
 
         public override void OnStartClient() => _target.Hit += OnTargetHit;
 
@@ -78,6 +90,7 @@ namespace ShooterShop.Range
         {
             IsReserved = false;
             _isOccupied = true;
+            _challengeEndTime = 0;
             _hits = 0;
             _sessionEndTime = NetworkTime.time + duration;
         }
@@ -90,6 +103,9 @@ namespace ShooterShop.Range
                 _isOccupied = false;
                 SessionFinished?.Invoke(this);
             }
+
+            if (IsChallengeRunning && NetworkTime.time >= _challengeEndTime)
+                FinishChallenge();
         }
 
         [Server]
@@ -104,9 +120,11 @@ namespace ShooterShop.Range
 
         public void TickDisplay(bool isUnlocked)
         {
+            var record = _record > 0 ? $"  Best {_record}" : string.Empty;
             var text = !isUnlocked ? $"LANE {Number}\nLOCKED"
                 : _isOccupied ? $"LANE {Number}\n{FormatTime(_sessionEndTime - NetworkTime.time)}  Hits {_hits}"
-                : $"LANE {Number}\nFREE  Hits {_hits}";
+                : IsChallengeRunning ? $"LANE {Number}  GO!\n{FormatTime(_challengeEndTime - NetworkTime.time)}  Hits {_hits}{record}"
+                : $"LANE {Number}\nShoot to start{record}";
 
             if (text != _shownText)
             {
@@ -131,13 +149,37 @@ namespace ShooterShop.Range
             Flash();
 
             if (isServer)
-                _hits++;
+                ServerRegisterPlayerHit();
             else
                 CmdReportHit();
         }
 
         [Command(requiresAuthority = false)]
-        private void CmdReportHit() => _hits++;
+        private void CmdReportHit() => ServerRegisterPlayerHit();
+
+        [Server]
+        private void ServerRegisterPlayerHit()
+        {
+            if (!_isOccupied && !IsChallengeRunning)
+            {
+                _hits = 0;
+                _challengeEndTime = NetworkTime.time + _challengeDuration;
+            }
+
+            _hits++;
+        }
+
+        [Server]
+        private void FinishChallenge()
+        {
+            _challengeEndTime = 0;
+
+            if (_hits <= _record)
+                return;
+
+            _record = _hits;
+            RecordSet?.Invoke(this, _record);
+        }
 
         [ClientRpc]
         private void RpcFlash() => Flash();

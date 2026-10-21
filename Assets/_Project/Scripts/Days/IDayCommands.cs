@@ -4,5 +4,7 @@ namespace ShooterShop.Days
     {
         bool CanStartNextDay { get; }
         void StartNextDay();
+        bool CanOpenShop { get; }
+        void OpenShop();
     }
 }

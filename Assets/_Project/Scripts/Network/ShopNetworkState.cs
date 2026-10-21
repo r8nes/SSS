@@ -31,6 +31,7 @@ namespace ShooterShop.Network
         private IDayStatistics _statistics;
         private IUnlocks _unlocks;
         private IDeliveryService _delivery;
+        private IDayState _day;
 
         public event Action MoneyChanged;
         public event Action StorageChanged;
@@ -42,8 +43,9 @@ namespace ShooterShop.Network
         public int FreeSpace => _capacity - _usedSpace;
 
         [Inject]
-        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics, IUnlocks unlocks, IDeliveryService delivery)
+        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics, IUnlocks unlocks, IDeliveryService delivery, IDayState day)
         {
+            _day = day;
             _wallet = wallet;
             _warehouse = warehouse;
             _catalog = catalog;
@@ -55,6 +57,9 @@ namespace ShooterShop.Network
 
         public int GetStock(ProductConfig product) =>
             _stock.TryGetValue(_catalog.IndexOf(product), out var amount) ? amount : 0;
+
+        public int GetPurchaseCost(ProductConfig product, int amount) =>
+            UnityEngine.Mathf.RoundToInt(product.BuyPrice * amount * (1f - (_day?.CurrentEvent?.PurchaseDiscount ?? 0f)));
 
         public void Purchase(ProductConfig product, int amount)
         {
@@ -138,7 +143,7 @@ namespace ShooterShop.Network
             if (!_unlocks.IsUnlocked(product.RequiredUpgrade) || !_warehouse.CanStore(product, amount))
                 return;
 
-            var cost = product.BuyPrice * amount;
+            var cost = GetPurchaseCost(product, amount);
 
             if (!_wallet.TrySpend(cost))
                 return;

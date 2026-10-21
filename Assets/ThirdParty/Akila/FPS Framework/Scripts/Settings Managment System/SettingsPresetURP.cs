@@ -9,19 +9,54 @@ namespace Akila.FPSFramework
 {
     public class SettingsPresetURP : SettingsPreset
     {
+        private static UniversalRenderPipelineAsset runtimeAsset;
+        private static RenderPipelineAsset originalQualityAsset;
+        private static RenderPipelineAsset originalDefaultAsset;
+
         private UniversalRenderPipelineAsset GetUniversalRenderPipelineAsset()
         {
-            UniversalRenderPipelineAsset asset = (UniversalRenderPipelineAsset)GraphicsSettings.currentRenderPipeline;
+            if (runtimeAsset != null)
+                return runtimeAsset;
 
-            if (asset != null)
-                return asset;
+            UniversalRenderPipelineAsset source = (UniversalRenderPipelineAsset)GraphicsSettings.currentRenderPipeline;
 
-            asset = (UniversalRenderPipelineAsset)QualitySettings.renderPipeline;
+            if (source == null)
+                return null;
 
-            if (asset != null)
-                return asset;
+            runtimeAsset = Instantiate(source);
+            runtimeAsset.name = source.name + " (Runtime)";
 
-            return null;
+            if (QualitySettings.renderPipeline != null)
+            {
+                originalQualityAsset = QualitySettings.renderPipeline;
+                QualitySettings.renderPipeline = runtimeAsset;
+            }
+            else
+            {
+                originalDefaultAsset = GraphicsSettings.defaultRenderPipeline;
+                GraphicsSettings.defaultRenderPipeline = runtimeAsset;
+            }
+
+            Application.quitting += RestoreOriginalAsset;
+            return runtimeAsset;
+        }
+
+        private static void RestoreOriginalAsset()
+        {
+            Application.quitting -= RestoreOriginalAsset;
+
+            if (originalQualityAsset != null)
+                QualitySettings.renderPipeline = originalQualityAsset;
+
+            if (originalDefaultAsset != null)
+                GraphicsSettings.defaultRenderPipeline = originalDefaultAsset;
+
+            if (runtimeAsset != null)
+                Destroy(runtimeAsset);
+
+            runtimeAsset = null;
+            originalQualityAsset = null;
+            originalDefaultAsset = null;
         }
 
         public void SetMSAA(int value)
@@ -109,7 +144,8 @@ namespace Akila.FPSFramework
 
         public void SetPostProcess(int value)
         {
-            Volume volume = FindFirstObjectByType<Volume>();
+            SettingsPostProcessTarget target = FindFirstObjectByType<SettingsPostProcessTarget>();
+            Volume volume = target != null ? target.Volume : null;
 
             if (volume == null)
             {

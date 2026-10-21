@@ -66,11 +66,13 @@ namespace Akila.FPSFramework
         public void SetFieldOfView(float value)
         {
             FPSFrameworkCore.FieldOfView = value;
+            FPSFrameworkCore.IsFieldOfViewOverridden = true;
         }
 
         public void SetWeaponFieldOfView(float value)
         {
             FPSFrameworkCore.WeaponFieldOfView = value;
+            FPSFrameworkCore.IsWeaponFieldOfViewOverridden = true;
         }
 
         public void SetGlobalVolume(float value)

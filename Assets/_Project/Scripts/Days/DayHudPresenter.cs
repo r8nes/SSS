@@ -16,12 +16,16 @@ namespace ShooterShop.Days
 
         public void Tick()
         {
-            if (_view != null)
-                _view.SetText(Format());
+            if (_view == null)
+                return;
+
+            var dayEvent = _state.CurrentEvent;
+            _view.SetText(dayEvent != null && _state.Day > 0 ? $"{Format()}\n<size=70%>{dayEvent.Title}</size>" : Format());
         }
 
         private string Format() => _state.Phase switch
         {
+            DayPhase.Preparing when _state.Day > 0 => $"Day {_state.Day}  Preparing",
             DayPhase.Open => $"Day {_state.Day}  {FormatTime(_state.TimeLeft)}",
             DayPhase.Closing => $"Day {_state.Day}  Closing...",
             DayPhase.Summary => $"Day {_state.Day}  Closed",

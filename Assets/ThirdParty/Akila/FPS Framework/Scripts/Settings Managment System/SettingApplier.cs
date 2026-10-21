@@ -102,6 +102,9 @@ namespace Akila.FPSFramework
 
         public void Load()
         {
+            if (!SaveSystem.HasKey(path, saveFileName))
+                return;
+
             if(slider != null)
             {
                 slider.value = SaveSystem.LoadOrSaveValue<float>(path, saveFileName, slider.value);

@@ -14,5 +14,6 @@ namespace ShooterShop.Days
         int Profit { get; }
         int Sales { get; }
         int LaneRentals { get; }
+        DayEventConfig CurrentEvent { get; }
     }
 }

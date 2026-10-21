@@ -1375,6 +1375,10 @@ PrefabInstance:
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
       objectReference: {fileID: 0}
+    - target: {fileID: 2081437182208735888, guid: f6a36f52df45cdf489d311a363b85737, type: 3}
+      propertyPath: m_BlockingMask.m_Bits
+      value: 47423
+      objectReference: {fileID: 0}
     - target: {fileID: 2351839306763585275, guid: f6a36f52df45cdf489d311a363b85737, type: 3}
       propertyPath: 'm_ActiveFontFeatures.Array.data[0]'
       value: 1801810542

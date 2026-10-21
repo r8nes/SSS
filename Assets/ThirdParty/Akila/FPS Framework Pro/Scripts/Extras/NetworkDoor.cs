@@ -9,10 +9,10 @@ using Mirror;
 namespace Akila.FPSFrameworkPro
 {
 #if MIRROR
-    [RequireComponent(typeof(Door)), DisallowMultipleComponent]
+    [RequireComponent(typeof(Akila.FPSFramework.Door)), DisallowMultipleComponent]
     public class NetworkDoor : NetworkBehaviour
     {
-        public Door targetDoor { get; private set; }
+        public Akila.FPSFramework.Door targetDoor { get; private set; }
 
         [SyncVar]
         public int currentStateIndex;
@@ -23,7 +23,7 @@ namespace Akila.FPSFrameworkPro
 
         private void Start()
         {
-            targetDoor = GetComponent<Door>();
+            targetDoor = GetComponent<Akila.FPSFramework.Door>();
 
             targetDoor.onInteraction.AddListener(Interact);
 
