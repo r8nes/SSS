@@ -56,8 +56,9 @@ namespace ShooterShop.Customers
         [BoxGroup("Violence"), MinValue(1)]
         [SerializeField] private float _panicSpeedMultiplier = 2.2f;
 
-        [BoxGroup("Corpse"), MinValue(0.1f), SuffixLabel("sec")]
-        [SerializeField] private float _corpseFallDuration = 0.5f;
+        [BoxGroup("Corpse"), MinValue(0)]
+        [InfoBox("Impulse applied to the ragdoll bone closest to the killing shot")]
+        [SerializeField] private float _deathImpulse = 120f;
 
         [BoxGroup("Corpse"), MinValue(0), SuffixLabel("sec")]
         [SerializeField] private float _corpseSinkDelay = 3f;
@@ -71,7 +72,7 @@ namespace ShooterShop.Customers
         public int HitsToKill => _hitsToKill;
         public float PanicDuration => _panicDuration;
         public float PanicSpeedMultiplier => _panicSpeedMultiplier;
-        public float CorpseFallDuration => _corpseFallDuration;
+        public float DeathImpulse => _deathImpulse;
         public float CorpseSinkDelay => _corpseSinkDelay;
         public float CorpseSinkDuration => _corpseSinkDuration;
         public float CorpseSinkDepth => _corpseSinkDepth;

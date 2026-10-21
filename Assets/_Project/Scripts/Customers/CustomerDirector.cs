@@ -107,16 +107,16 @@ namespace ShooterShop.Customers
             _lifetime.Dispose();
         }
 
-        public void ServerHit(Customer customer)
+        public void ServerHit(Customer customer, Vector3 direction, Vector3 point)
         {
             if (customer == null || customer.State == CustomerState.Dead || !customer.HasRequest || !_customers.Contains(customer))
                 return;
 
             if (customer.ServerRegisterHit() >= _config.HitsToKill)
-                Kill(customer);
+                Kill(customer, direction, point);
         }
 
-        private void Kill(Customer customer)
+        private void Kill(Customer customer, Vector3 direction, Vector3 point)
         {
             RemoveFromQueue(customer);
             ReturnItems(customer);
@@ -128,7 +128,7 @@ namespace ShooterShop.Customers
             DropRentalWeapon(customer);
             _customers.Remove(customer);
 
-            customer.ServerDie(_config.CorpseFallDuration, _config.CorpseSinkDelay, _config.CorpseSinkDuration, _config.CorpseSinkDepth);
+            customer.ServerDie(direction.normalized * _config.DeathImpulse, point, _config.CorpseSinkDelay, _config.CorpseSinkDuration, _config.CorpseSinkDepth);
             DespawnCorpseAsync(customer).Forget();
             Panic();
         }
@@ -162,7 +162,7 @@ namespace ShooterShop.Customers
 
         private async UniTaskVoid DespawnCorpseAsync(Customer customer)
         {
-            var lifetime = _config.CorpseFallDuration + _config.CorpseSinkDelay + _config.CorpseSinkDuration;
+            var lifetime = _config.CorpseSinkDelay + _config.CorpseSinkDuration;
 
             if (await UniTask.Delay(TimeSpan.FromSeconds(lifetime), cancellationToken: _lifetime.Token).SuppressCancellationThrow())
                 return;

@@ -1,7 +1,10 @@
 {
     "name": "ShooterShop.Editor",
     "rootNamespace": "ShooterShop.Editor",
-    "references": [],
+    "references": [
+        "ShooterShop.Runtime",
+        "Akila.FPSFramework"
+    ],
     "includePlatforms": [
         "Editor"
     ],

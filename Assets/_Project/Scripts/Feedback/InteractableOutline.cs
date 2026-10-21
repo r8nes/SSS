@@ -39,6 +39,17 @@ namespace ShooterShop.Feedback
             MaterialOutline.Apply(_renderers.Where(target => target is SkinnedMeshRenderer), _outlineMaterial, visible);
         }
 
+        public void SetRenderers(IEnumerable<Renderer> renderers)
+        {
+            if (_isVisible)
+                MaterialOutline.Apply(_renderers.Where(target => target is SkinnedMeshRenderer), _outlineMaterial, false);
+
+            _renderers = new List<Renderer>(renderers);
+
+            if (_isVisible)
+                MaterialOutline.Apply(_renderers.Where(target => target is SkinnedMeshRenderer), _outlineMaterial, true);
+        }
+
         private void PrepareShells()
         {
             _isPrepared = true;

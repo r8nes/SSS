@@ -1,7 +1,7 @@
 using System;
 using Akila.FPSFramework;
 using Mirror;
-using PrimeTween;
+using Cysharp.Threading.Tasks;
 using System.Collections.Generic;
 using ShooterShop.Catalog;
 using ShooterShop.Feedback;
@@ -24,9 +24,6 @@ namespace ShooterShop.Customers
 
         [Required]
         [SerializeField] private InteractableOutline _outline;
-
-        [BoxGroup("Animation"), Required]
-        [SerializeField] private Animator _animator;
 
         [BoxGroup("Animation"), MinValue(1)]
         [SerializeField] private float _animationSmoothing = 10f;
@@ -57,14 +54,14 @@ namespace ShooterShop.Customers
         [BoxGroup("Request"), Required, ChildGameObjectsOnly]
         [SerializeField] private SpriteRenderer _requestIcon;
 
-        [BoxGroup("Range"), ChildGameObjectsOnly]
-        [SerializeField] private List<GameObject> _weaponParts = new();
-
         [BoxGroup("Range")]
         [SerializeField] private string _weaponLayer = "Pistol";
 
         [BoxGroup("Range")]
         [SerializeField] private string _fireState = "Fire";
+
+        [SyncVar]
+        private int _appearanceIndex = -1;
 
         [SyncVar(hook = nameof(OnRequestSynced))]
         private int _productIndex = -1;
@@ -99,6 +96,10 @@ namespace ShooterShop.Customers
         private ProductCatalog _catalog;
         private ICustomerInteraction _interaction;
         private ICustomerDamage _damage;
+        private CustomerAppearanceCatalog _appearances;
+        private Animator _animator;
+        private CustomerRagdoll _ragdoll;
+        private GameObject _handWeapon;
         private int _hitsTaken;
         private CustomerRegistry _registry;
         private IScreenLabels _screenLabels;
@@ -145,8 +146,9 @@ namespace ShooterShop.Customers
         }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback, ICustomerDamage damage)
+        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback, ICustomerDamage damage, CustomerAppearanceCatalog appearances)
         {
+            _appearances = appearances;
             _damage = damage;
             _screenLabels = screenLabels;
             _viewCamera = viewCamera;
@@ -161,11 +163,8 @@ namespace ShooterShop.Customers
             _screenLabel = _screenLabels.Create(transform, _label.transform.localPosition, _feedback.CustomerStyle);
             _label.gameObject.SetActive(false);
             _agent.enabled = isServer;
+            BuildAppearance();
             _lastPosition = transform.position;
-            _animator.SetBool(IsGrounded, true);
-
-            for (var layer = 1; layer < _animator.layerCount; layer++)
-                _animator.SetLayerWeight(layer, 0f);
 
             _registry.Add(this);
             RefreshWeapon();
@@ -182,7 +181,7 @@ namespace ShooterShop.Customers
 
         public void ClientTick(float deltaTime)
         {
-            if (deltaTime <= 0f)
+            if (deltaTime <= 0f || _animator == null)
                 return;
 
             TickPatience();
@@ -199,6 +198,7 @@ namespace ShooterShop.Customers
         [Server]
         public void ServerInitialize(CustomerRequest request, float speed)
         {
+            _appearanceIndex = _appearances.PickIndex();
             _productIndex = _catalog.IndexOf(request.Product);
             _amount = request.Amount;
             _laneFee = request.LaneFee;
@@ -210,6 +210,7 @@ namespace ShooterShop.Customers
         [Server]
         public void ServerInitializeCourier(float speed)
         {
+            _appearanceIndex = _appearances.PickIndex();
             _productIndex = -1;
             _agent.speed = speed;
             _walkSpeed = speed;
@@ -250,15 +251,11 @@ namespace ShooterShop.Customers
         public void ServerSetSpeedMultiplier(float multiplier) => _agent.speed *= multiplier;
 
         [Server]
-        public void ServerDie(float fallDuration, float sinkDelay, float sinkDuration, float sinkDepth)
+        public void ServerDie(Vector3 impulse, Vector3 hitPoint, float sinkDelay, float sinkDuration, float sinkDepth)
         {
             ServerSetState(CustomerState.Dead);
             _agent.enabled = false;
-
-            var fallen = transform.rotation * Quaternion.Euler(-85f, 0f, 0f);
-            var position = transform.position;
-            Tween.Rotation(transform, fallen, fallDuration, Ease.OutBounce);
-            Tween.Position(transform, position, position + Vector3.down * sinkDepth, sinkDuration, Ease.InSine, startDelay: fallDuration + sinkDelay);
+            RpcDie(impulse, hitPoint, sinkDelay, sinkDuration, sinkDepth);
         }
 
         public void OnHitInChildren(HitInfo hitInfo)
@@ -269,13 +266,32 @@ namespace ShooterShop.Customers
                 return;
 
             if (isServer)
-                _damage.ServerHit(this);
+                _damage.ServerHit(this, hitInfo.hitDirection, hitInfo.hitPoint);
             else
-                CmdHit();
+                CmdHit(hitInfo.hitDirection, hitInfo.hitPoint);
         }
 
         [Command(requiresAuthority = false)]
-        private void CmdHit() => _damage.ServerHit(this);
+        private void CmdHit(Vector3 direction, Vector3 point) => _damage.ServerHit(this, direction, point);
+
+        [ClientRpc]
+        private void RpcDie(Vector3 impulse, Vector3 hitPoint, float sinkDelay, float sinkDuration, float sinkDepth)
+        {
+            if (_ragdoll != null)
+                _ragdoll.Activate(impulse, hitPoint);
+            SinkLaterAsync(sinkDelay, sinkDuration, sinkDepth).Forget();
+        }
+
+        private async UniTaskVoid SinkLaterAsync(float delay, float duration, float depth)
+        {
+            var token = this.GetCancellationTokenOnDestroy();
+
+            if (await UniTask.Delay(TimeSpan.FromSeconds(delay), cancellationToken: token).SuppressCancellationThrow())
+                return;
+
+            if (_ragdoll != null)
+                _ragdoll.Sink(depth, duration);
+        }
 
         [Server]
         public void ServerSetRentalWeapon(int weapon)
@@ -347,6 +363,9 @@ namespace ShooterShop.Customers
         [ClientRpc]
         private void RpcFire()
         {
+            if (_animator == null)
+                return;
+
             var layer = _animator.GetLayerIndex(_weaponLayer);
 
             if (layer >= 0)
@@ -357,13 +376,39 @@ namespace ShooterShop.Customers
         {
             var isHoldingRental = _rentalWeapon >= 0 && _state is CustomerState.GoingToLane or CustomerState.Shooting or CustomerState.ReturningWeapon;
             var isShooting = isHoldingRental && _state == CustomerState.Shooting;
+
+            if (_animator == null)
+                return;
+
             var layer = _animator.GetLayerIndex(_weaponLayer);
 
-            foreach (var part in _weaponParts)
-                part.SetActive(isHoldingRental);
+            if (_handWeapon != null)
+                _handWeapon.SetActive(isHoldingRental);
 
             if (layer >= 0)
                 _animator.SetLayerWeight(layer, isShooting ? 1f : 0f);
+        }
+
+        private void BuildAppearance()
+        {
+            if (!_appearances.TryGet(_appearanceIndex, out var prefab))
+                return;
+
+            var appearance = Instantiate(prefab, transform, false);
+            appearance.transform.SetLocalPositionAndRotation(_appearances.ModelOffset, Quaternion.identity);
+
+            _animator = appearance.Animator;
+            _ragdoll = appearance.Ragdoll;
+            _ragdoll.Freeze();
+            _outline.SetRenderers(appearance.Renderers);
+            _animator.SetBool(IsGrounded, true);
+
+            for (var layer = 1; layer < _animator.layerCount; layer++)
+                _animator.SetLayerWeight(layer, 0f);
+
+            _handWeapon = Instantiate(_appearances.HandWeapon, appearance.RightHand, false);
+            _handWeapon.transform.SetLocalPositionAndRotation(_appearances.HandWeaponPosition, _appearances.HandWeaponRotation);
+            _handWeapon.SetActive(false);
         }
 
         private void RefreshPatience() =>

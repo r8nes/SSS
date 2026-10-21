@@ -33,6 +33,9 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private CustomerConfig _customerConfig;
 
+        [BoxGroup("Configs"), Required]
+        [SerializeField] private CustomerAppearanceCatalog _customerAppearances;
+
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private RangeConfig _rangeConfig;
 
@@ -150,6 +153,7 @@ namespace ShooterShop.Bootstrap
             builder.Register<ShootingRange>(Lifetime.Singleton).AsImplementedInterfaces();
 
             builder.RegisterInstance(_customerConfig);
+            builder.RegisterInstance(_customerAppearances);
             builder.RegisterComponent(_shopLayout);
             builder.Register<CustomerDirector>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.RegisterInstance(new InjectedPrefabs(_customerConfig.Prefab.gameObject, _storeConfig.BoxPrefab.gameObject));
