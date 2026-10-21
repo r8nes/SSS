@@ -79,6 +79,9 @@ namespace ShooterShop.Customers
         [SyncVar(hook = nameof(OnRequestSynced))]
         private int _markupPercent;
 
+        [SyncVar(hook = nameof(OnRentalSynced))]
+        private int _rentalWeapon = -1;
+
         [SyncVar]
         private double _patienceStartedAt;
 
@@ -88,6 +91,10 @@ namespace ShooterShop.Customers
         private ProductCatalog _catalog;
         private ICustomerInteraction _interaction;
         private CustomerRegistry _registry;
+        private IScreenLabels _screenLabels;
+        private IViewCamera _viewCamera;
+        private FeedbackConfig _feedback;
+        private ScreenLabel _screenLabel;
         private Vector3 _lastPosition;
         private Vector2 _move;
         private Quaternion? _arrivalRotation;
@@ -108,6 +115,7 @@ namespace ShooterShop.Customers
         public float PatienceLeft => _patienceDuration <= 0f ? float.MaxValue : _patienceDuration - (float)(NetworkTime.time - _patienceStartedAt);
         public int QueuePosition => _queuePosition;
         public bool IsInQueue => _queuePosition >= 0;
+        public int RentalWeapon => _rentalWeapon;
         public bool CanBeServed => _state == CustomerState.Waiting && _queuePosition == 0 && HasRequest;
 
         public bool HasRequest => _catalog != null && _catalog.TryGet(_productIndex, out _);
@@ -127,8 +135,11 @@ namespace ShooterShop.Customers
         }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry)
+        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback)
         {
+            _screenLabels = screenLabels;
+            _viewCamera = viewCamera;
+            _feedback = feedback;
             _catalog = catalog;
             _interaction = interaction;
             _registry = registry;
@@ -136,6 +147,8 @@ namespace ShooterShop.Customers
 
         public override void OnStartClient()
         {
+            _screenLabel = _screenLabels.Create(transform, _label.transform.localPosition, _feedback.CustomerStyle);
+            _label.gameObject.SetActive(false);
             _agent.enabled = isServer;
             _lastPosition = transform.position;
             _animator.SetBool(IsGrounded, true);
@@ -149,7 +162,12 @@ namespace ShooterShop.Customers
             RefreshPatience();
         }
 
-        public override void OnStopClient() => _registry.Remove(this);
+        public override void OnStopClient()
+        {
+            _registry.Remove(this);
+            _screenLabels.Release(_screenLabel);
+            _screenLabel = null;
+        }
 
         public void ClientTick(float deltaTime)
         {
@@ -215,6 +233,13 @@ namespace ShooterShop.Customers
         public void ServerSetMarkup(int markupPercent) => _markupPercent = markupPercent;
 
         [Server]
+        public void ServerSetRentalWeapon(int weapon)
+        {
+            _rentalWeapon = weapon;
+            RefreshWeapon();
+        }
+
+        [Server]
         public void ServerStartPatience(float duration)
         {
             _patienceStartedAt = NetworkTime.time;
@@ -259,6 +284,8 @@ namespace ShooterShop.Customers
 
         private void OnRequestSynced(int _, int __) => RefreshLabel();
 
+        private void OnRentalSynced(int _, int __) => RefreshWeapon();
+
         private void OnStateSynced(CustomerState _, CustomerState __)
         {
             RefreshPatience();
@@ -281,24 +308,25 @@ namespace ShooterShop.Customers
         private void RefreshWeapon()
         {
             var isShooting = _state == CustomerState.Shooting;
+            var isHoldingRental = _rentalWeapon >= 0 && _state is CustomerState.GoingToLane or CustomerState.Shooting or CustomerState.ReturningWeapon;
             var layer = _animator.GetLayerIndex(_weaponLayer);
 
             foreach (var part in _weaponParts)
-                part.SetActive(isShooting);
+                part.SetActive(isShooting || isHoldingRental);
 
             if (layer >= 0)
                 _animator.SetLayerWeight(layer, isShooting ? 1f : 0f);
         }
 
         private void RefreshPatience() =>
-            _patienceBar.SetActive(_state is CustomerState.Waiting or CustomerState.Searching);
+            _patienceBar.SetActive(_state is CustomerState.Waiting or CustomerState.Searching or CustomerState.WaitingForWeapon);
 
         private void TickPatience()
         {
             if (!_patienceBar.activeSelf)
                 return;
 
-            var camera = Camera.main;
+            var camera = _viewCamera.Current;
 
             if (camera != null)
                 _patienceBar.transform.rotation = camera.transform.rotation;
@@ -325,15 +353,17 @@ namespace ShooterShop.Customers
             if (isSearching)
                 _requestIcon.sprite = Request.Product.Icon;
 
-            _label.text = _state switch
+            _screenLabel?.SetText(_state switch
             {
                 CustomerState.Searching when HasRequest => $"Needs {Request.Product.DisplayName}!",
                 CustomerState.Delivering => "Delivery",
+                CustomerState.GoingToHandout or CustomerState.WaitingForWeapon => "Waiting for a rental gun",
+                CustomerState.ReturningWeapon => "Returning the gun",
                 CustomerState.Waiting when HasRequest => $"{Request.Describe()}  ${Request.Price:N0}",
                 CustomerState.Browsing when HasRequest => $"Looking for {Request.Product.DisplayName}",
                 CustomerState.Arriving when HasRequest => Request.Describe(),
                 _ => string.Empty
-            };
+            });
         }
     }
 }

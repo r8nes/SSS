@@ -29,6 +29,15 @@ namespace ShooterShop.Range
         [InfoBox("A player's first hit on a free lane starts a timed round, best hits are kept as the lane record")]
         [SerializeField] private float _challengeDuration = 20;
 
+        [BoxGroup("Rental weapons")]
+        [InfoBox("Visitors pick a rental weapon up at the counter after paying and bring it back after shooting")]
+        [SerializeField] private bool _requiresRentalWeapon = true;
+
+        [BoxGroup("Rental weapons"), ShowIf(nameof(_requiresRentalWeapon)), MinValue(5), SuffixLabel("sec")]
+        [SerializeField] private float _rentalWaitPatience = 40;
+
+        public bool RequiresRentalWeapon => _requiresRentalWeapon;
+        public float RentalWaitPatience => _rentalWaitPatience;
         public float ChallengeDuration => _challengeDuration;
         public int LaneFee => _laneFee;
         public float SessionDuration => _sessionDuration;

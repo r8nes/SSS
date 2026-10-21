@@ -9,6 +9,7 @@ using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Feedback;
 using ShooterShop.Range;
+using ShooterShop.Rentals;
 using ShooterShop.Storage;
 using ShooterShop.Store;
 using ShooterShop.Upgrades;
@@ -35,6 +36,7 @@ namespace ShooterShop.Customers
         private readonly IUnlocks _unlocks;
         private readonly IObjectResolver _resolver;
         private readonly IShopFeed _feed;
+        private readonly RentalStations _rentals;
         private readonly List<Customer> _customers = new();
         private readonly Dictionary<Customer, ShootingLane> _lanes = new();
         private readonly Dictionary<Customer, ProductStand> _stands = new();
@@ -55,6 +57,7 @@ namespace ShooterShop.Customers
             IDayStatistics statistics,
             IUnlocks unlocks,
             IShopFeed feed,
+            RentalStations rentals,
             IObjectResolver resolver)
         {
             _config = config;
@@ -71,6 +74,7 @@ namespace ShooterShop.Customers
             _unlocks = unlocks;
             _resolver = resolver;
             _feed = feed;
+            _rentals = rentals;
         }
 
         public int ActiveCount => _customers.Count;
@@ -124,10 +128,12 @@ namespace ShooterShop.Customers
             _statistics.RecordSale(income, request.IsRangeVisit);
             _feed.Popup(popupPoint, tip > 0 ? $"+${request.Price:N0}  <size=70%>+${tip:N0} tip</size>" : $"+${request.Price:N0}");
 
-            if (_lanes.TryGetValue(customer, out var lane))
-                SendToLane(customer, lane);
-            else
+            if (!_lanes.TryGetValue(customer, out var lane))
                 Leave(customer);
+            else if (_rangeConfig.RequiresRentalWeapon)
+                SendToHandout(customer);
+            else
+                SendToLane(customer, lane);
 
             return true;
         }
@@ -144,7 +150,7 @@ namespace ShooterShop.Customers
             {
                 var customer = _customers[i];
 
-                if (customer != null && customer.State is CustomerState.Browsing or CustomerState.Arriving or CustomerState.Waiting or CustomerState.Searching)
+                if (customer != null && customer.State is CustomerState.Browsing or CustomerState.Arriving or CustomerState.Waiting or CustomerState.Searching or CustomerState.GoingToHandout or CustomerState.WaitingForWeapon)
                     Leave(customer);
             }
         }
@@ -176,6 +182,16 @@ namespace ShooterShop.Customers
                     break;
                 case CustomerState.Waiting:
                     customer.ServerTickArrival();
+                    break;
+                case CustomerState.GoingToHandout when customer.ServerTickArrival():
+                    customer.ServerSetState(CustomerState.WaitingForWeapon);
+                    customer.ServerStartPatience(_rangeConfig.RentalWaitPatience);
+                    break;
+                case CustomerState.WaitingForWeapon:
+                    TickWaitingForWeapon(customer);
+                    break;
+                case CustomerState.ReturningWeapon when customer.ServerTickArrival():
+                    Leave(customer);
                     break;
                 case CustomerState.GoingToLane when customer.ServerTickArrival():
                     StartShooting(customer);
@@ -244,6 +260,41 @@ namespace ShooterShop.Customers
             MoveToQueuePosition(customer, _queue.Count - 1);
         }
 
+        private void SendToHandout(Customer customer)
+        {
+            RemoveFromQueue(customer);
+            customer.ServerSetState(CustomerState.GoingToHandout);
+            customer.ServerMoveTo(_rentals.Handout.CustomerPoint.position, _rentals.Handout.CustomerPoint.rotation);
+            _feed.Notify("A shooter is waiting for a rental gun at the counter", NotificationKind.Warning);
+        }
+
+        private void TickWaitingForWeapon(Customer customer)
+        {
+            var weapon = _rentals.Handout.ServerTakeAny();
+
+            if (weapon >= 0 && _lanes.TryGetValue(customer, out var lane))
+            {
+                customer.ServerSetRentalWeapon(weapon);
+                SendToLane(customer, lane);
+                return;
+            }
+
+            if (weapon >= 0)
+                ReturnWeapon(weapon);
+
+            if (customer.PatienceLeft > 0f)
+                return;
+
+            _feed.Notify("A shooter got no rental gun and left", NotificationKind.Warning);
+            Leave(customer);
+        }
+
+        private void ReturnWeapon(int weapon)
+        {
+            if (!_rentals.Handout.ServerPut(weapon))
+                _rentals.Rack.ServerPut(weapon);
+        }
+
         private void StartSearching(Customer customer, ProductConfig product)
         {
             if (customer.State == CustomerState.Searching)
@@ -301,10 +352,22 @@ namespace ShooterShop.Customers
         {
             var customer = _lanes.FirstOrDefault(pair => pair.Value == lane).Key;
 
-            if (customer != null)
-                Leave(customer);
-            else
+            if (customer == null)
+            {
                 _range.Release(lane);
+                return;
+            }
+
+            if (customer.RentalWeapon < 0)
+            {
+                Leave(customer);
+                return;
+            }
+
+            _lanes.Remove(customer);
+            _range.Release(lane);
+            customer.ServerSetState(CustomerState.ReturningWeapon);
+            customer.ServerMoveTo(_rentals.Handout.CustomerPoint.position, _rentals.Handout.CustomerPoint.rotation);
         }
 
         private void Leave(Customer customer)
@@ -312,6 +375,13 @@ namespace ShooterShop.Customers
             RemoveFromQueue(customer);
             ReturnItems(customer);
             _stands.Remove(customer);
+
+            if (customer.RentalWeapon >= 0)
+            {
+                ReturnWeapon(customer.RentalWeapon);
+                customer.ServerSetRentalWeapon(-1);
+                _feed.Notify("A shooter returned the rental gun to the counter", NotificationKind.Info);
+            }
 
             if (_lanes.Remove(customer, out var lane))
                 _range.Release(lane);

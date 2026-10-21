@@ -9,6 +9,7 @@ using ShooterShop.Loading;
 using ShooterShop.Network;
 using ShooterShop.Purchasing;
 using ShooterShop.Range;
+using ShooterShop.Rentals;
 using ShooterShop.Sales;
 using ShooterShop.Saves;
 using ShooterShop.Storage;
@@ -89,6 +90,12 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Hud")]
         [SerializeField] private WorldMarkerSet _worldMarkers = new();
 
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private RentalWeaponCatalog _rentalWeaponCatalog;
+
+        [BoxGroup("Range")]
+        [SerializeField] private RentalStations _rentalStations = new();
+
         [BoxGroup("Hud"), Required, SceneObjectsOnly]
         [SerializeField] private MoneyHudView _moneyHudView;
 
@@ -114,6 +121,8 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_notificationView);
             builder.RegisterEntryPoint<NotificationPresenter>();
             builder.RegisterEntryPoint<WorldPopupSpawner>();
+            builder.Register<ViewCamera>(Lifetime.Singleton).As<IViewCamera>();
+            builder.Register<ScreenLabelLayer>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.RegisterInstance(_worldMarkers);
             builder.RegisterEntryPoint<WorldMarkerPresenter>();
 
@@ -131,6 +140,10 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_purchaseTerminalView);
             builder.RegisterEntryPoint<PurchaseTerminalPresenter>();
             builder.RegisterEntryPoint<UpgradesPresenter>();
+
+            builder.RegisterInstance(_rentalWeaponCatalog);
+            builder.RegisterInstance(_rentalStations);
+            builder.Register<AkilaPlayerHands>(Lifetime.Singleton).As<IPlayerHands>();
 
             builder.RegisterInstance(_rangeConfig);
             builder.RegisterComponent(_rangeLayout);
@@ -156,6 +169,8 @@ namespace ShooterShop.Bootstrap
                     container.Inject(stand);
 
                 container.Inject(_shopOpenSign);
+                container.Inject(_rentalStations.Rack);
+                container.Inject(_rentalStations.Handout);
             });
             builder.Register<CustomerRegistry>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
 

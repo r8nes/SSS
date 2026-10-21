@@ -10,11 +10,13 @@ namespace ShooterShop.Feedback
     {
         private readonly IShopFeedEvents _feed;
         private readonly FeedbackConfig _config;
+        private readonly IScreenLabels _labels;
 
-        public WorldPopupSpawner(IShopFeedEvents feed, FeedbackConfig config)
+        public WorldPopupSpawner(IShopFeedEvents feed, FeedbackConfig config, IScreenLabels labels)
         {
             _feed = feed;
             _config = config;
+            _labels = labels;
         }
 
         public void Start() => _feed.PoppedUp += OnPoppedUp;
@@ -23,19 +25,22 @@ namespace ShooterShop.Feedback
 
         private void OnPoppedUp(Vector3 position, string text, NotificationKind kind)
         {
-            var camera = Camera.main;
-            var rotation = camera != null ? camera.transform.rotation : Quaternion.identity;
-            var popup = Object.Instantiate(_config.PopupPrefab, position, rotation);
-            var scale = popup.transform.localScale;
+            var anchor = new GameObject("Popup Anchor").transform;
+            anchor.position = position;
 
-            popup.text = text;
-            popup.color = _config.ColorOf(kind);
+            var label = _labels.Create(anchor, Vector3.zero, _config.PopupStyle);
+            var color = _config.ColorOf(kind);
+            label.SetText(text);
+            label.SetColor(color);
 
             var duration = _config.PopupDuration;
-            Tween.Position(popup.transform, position, position + Vector3.up * _config.PopupRise, duration, Ease.OutCubic);
-            Tween.Scale(popup.transform, Vector3.zero, scale, _config.PopDuration, Ease.OutBack);
-            Tween.Custom(popup, 1f, 0f, duration * 0.4f, (target, alpha) => target.alpha = alpha, startDelay: duration * 0.6f)
-                .OnComplete(popup.gameObject, Object.Destroy);
+            Tween.Position(anchor, position, position + Vector3.up * _config.PopupRise, duration, Ease.OutCubic);
+            Tween.Custom(label, 1f, 0f, duration * 0.4f, (target, alpha) => target.SetAlpha(alpha), startDelay: duration * 0.6f)
+                .OnComplete(() =>
+                {
+                    _labels.Release(label);
+                    Object.Destroy(anchor.gameObject);
+                });
         }
     }
 }

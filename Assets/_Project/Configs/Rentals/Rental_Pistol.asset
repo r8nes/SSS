@@ -1,0 +1,17 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 60a06e9248ebc5f4fb855af8937c7062, type: 3}
+  m_Name: Rental_Pistol
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Rentals.RentalWeaponConfig
+  _displayName: Rental pistol
+  _item: {fileID: 6056830581376189772, guid: aa970c2277175a2469e6f51c620d7d89, type: 3}
+  _displayModel: {fileID: 4309385554998612629, guid: 6457693672c6b714181646757bcfdabb, type: 3}

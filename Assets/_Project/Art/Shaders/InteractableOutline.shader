@@ -3,7 +3,8 @@ Shader "ShooterShop/Interactable Outline"
     Properties
     {
         _OutlineColor ("Color", Color) = (1, 0.78, 0.25, 1)
-        _OutlineWidth ("Width (m)", Range(0, 0.05)) = 0.012
+        _OutlineWidthPx ("Width (px at 1080p)", Range(0.5, 12)) = 3
+        [IntRange] _StencilRef ("Stencil Ref", Range(1, 255)) = 64
     }
 
     HLSLINCLUDE
@@ -11,7 +12,8 @@ Shader "ShooterShop/Interactable Outline"
 
     CBUFFER_START(UnityPerMaterial)
         half4 _OutlineColor;
-        float _OutlineWidth;
+        float _OutlineWidthPx;
+        float _StencilRef;
     CBUFFER_END
 
     struct Attributes
@@ -24,81 +26,93 @@ Shader "ShooterShop/Interactable Outline"
     struct Varyings
     {
         float4 positionCS : SV_POSITION;
-        float3 normalWS : TEXCOORD0;
         UNITY_VERTEX_OUTPUT_STEREO
     };
 
-    Varyings Vert(Attributes input)
+    Varyings VertMask(Attributes input)
+    {
+        Varyings output;
+        UNITY_SETUP_INSTANCE_ID(input);
+        UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+        output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
+        return output;
+    }
+
+    Varyings VertOutline(Attributes input)
     {
         Varyings output;
         UNITY_SETUP_INSTANCE_ID(input);
         UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
+        float4 positionCS = TransformObjectToHClip(input.positionOS.xyz);
         float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
-        float3 positionWS = TransformObjectToWorld(input.positionOS.xyz) + normalWS * _OutlineWidth;
-        output.positionCS = TransformWorldToHClip(positionWS);
-        output.normalWS = normalWS;
+        float2 normalCS = mul((float3x3)GetWorldToHClipMatrix(), normalWS).xy;
+        float lengthCS = max(length(normalCS), 1e-5);
+        float2 pixelScale = float2(_ScreenParams.y / _ScreenParams.x, 1.0) * (_ScreenParams.y / 1080.0);
+        float2 offset = normalCS / lengthCS * pixelScale * (_OutlineWidthPx * 2.0 / _ScreenParams.y);
+
+        positionCS.xy += offset * positionCS.w;
+        output.positionCS = positionCS;
         return output;
     }
 
-    half4 FragColor(Varyings input) : SV_Target
-    {
-        return _OutlineColor;
-    }
-
-    half4 FragDepth(Varyings input) : SV_Target
+    half4 FragNothing(Varyings input) : SV_Target
     {
         return 0;
     }
 
-    half4 FragDepthNormals(Varyings input) : SV_Target
+    half4 FragOutline(Varyings input) : SV_Target
     {
-        return half4(NormalizeNormalPerPixel(-input.normalWS), 0);
+        return _OutlineColor;
     }
     ENDHLSL
 
     SubShader
     {
-        Tags { "RenderType" = "Opaque" "RenderPipeline" = "UniversalPipeline" "Queue" = "Geometry+10" }
-        Cull Front
+        Tags { "RenderType" = "Transparent" "RenderPipeline" = "UniversalPipeline" "Queue" = "Transparent+50" "IgnoreProjector" = "True" }
+
+        Pass
+        {
+            Name "OutlineMask"
+            Tags { "LightMode" = "SRPDefaultUnlit" }
+            Cull Back
+            ZWrite Off
+            ZTest LEqual
+            Offset -1, -1
+            ColorMask 0
+
+            Stencil
+            {
+                Ref [_StencilRef]
+                Comp Always
+                Pass Replace
+            }
+
+            HLSLPROGRAM
+            #pragma vertex VertMask
+            #pragma fragment FragNothing
+            #pragma multi_compile_instancing
+            ENDHLSL
+        }
 
         Pass
         {
             Name "Outline"
             Tags { "LightMode" = "UniversalForward" }
-            ZWrite On
+            Cull Off
+            ZWrite Off
             ZTest LEqual
 
-            HLSLPROGRAM
-            #pragma vertex Vert
-            #pragma fragment FragColor
-            #pragma multi_compile_instancing
-            ENDHLSL
-        }
-
-        Pass
-        {
-            Name "DepthOnly"
-            Tags { "LightMode" = "DepthOnly" }
-            ZWrite On
-            ColorMask R
+            Stencil
+            {
+                Ref [_StencilRef]
+                Comp NotEqual
+                Pass Keep
+            }
 
             HLSLPROGRAM
-            #pragma vertex Vert
-            #pragma fragment FragDepth
-            #pragma multi_compile_instancing
-            ENDHLSL
-        }
-
-        Pass
-        {
-            Name "DepthNormals"
-            Tags { "LightMode" = "DepthNormals" }
-            ZWrite On
-
-            HLSLPROGRAM
-            #pragma vertex Vert
-            #pragma fragment FragDepthNormals
+            #pragma vertex VertOutline
+            #pragma fragment FragOutline
             #pragma multi_compile_instancing
             ENDHLSL
         }

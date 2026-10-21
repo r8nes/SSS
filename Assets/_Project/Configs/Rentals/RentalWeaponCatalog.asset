@@ -1,0 +1,18 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1f6f34b1f0c4be443bf24819cb2b3c68, type: 3}
+  m_Name: RentalWeaponCatalog
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Rentals.RentalWeaponCatalog
+  _weapons:
+  - {fileID: 11400000, guid: 384c86c0c83a9ae49a655249ba4ab69e, type: 2}
+  - {fileID: 11400000, guid: bb788d245b497e84f96d02b3e9f27833, type: 2}
+  - {fileID: 11400000, guid: 3910ca7b2f3647e4ca57e553af15b5dc, type: 2}

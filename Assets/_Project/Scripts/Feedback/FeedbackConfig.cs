@@ -59,8 +59,8 @@ namespace ShooterShop.Feedback
         [BoxGroup("Colors")]
         [SerializeField] private Color _warningColor = new(1f, 0.55f, 0.3f);
 
-        [BoxGroup("World popups"), Required, AssetsOnly]
-        [SerializeField] private TextMeshPro _popupPrefab;
+        [BoxGroup("World popups")]
+        [SerializeField] private ScreenLabelStyle _popupStyle = new(30f, Color.white, 0f, false);
 
         [BoxGroup("World popups"), MinValue(0.2f), SuffixLabel("sec")]
         [SerializeField] private float _popupDuration = 1.4f;
@@ -81,13 +81,47 @@ namespace ShooterShop.Feedback
         [InfoBox("Boxes lying this close to the delivery point show the delivery marker")]
         [SerializeField] private float _deliveryMarkerRadius = 6f;
 
+        [BoxGroup("Screen labels"), AssetsOnly]
+        [InfoBox("Leave empty to use the TextMeshPro default font")]
+        [SerializeField] private TMP_FontAsset _screenLabelFont;
+
+        [BoxGroup("Screen labels"), MinValue(50), SuffixLabel("px")]
+        [SerializeField] private float _screenLabelWidth = 360f;
+
+        [BoxGroup("Screen labels"), Range(0f, 0.5f)]
+        [SerializeField] private float _screenLabelOutline = 0.25f;
+
+        [BoxGroup("Screen labels"), MinValue(0), SuffixLabel("px")]
+        [SerializeField] private float _screenEdgeMargin = 60f;
+
+        [BoxGroup("Screen labels")]
+        [InfoBox("Below the gameplay UI so dialogs stay on top")]
+        [SerializeField] private int _screenLabelSortingOrder = -10;
+
+        [BoxGroup("Screen labels")]
+        [SerializeField] private ScreenLabelStyle _markerStyle = new(26f, new Color(1f, 0.85f, 0.35f), 0f, true);
+
+        [BoxGroup("Screen labels")]
+        [SerializeField] private ScreenLabelStyle _customerStyle = new(20f, Color.white, 14f, false);
+
+        [BoxGroup("Screen labels"), SuffixLabel("m")]
+        [SerializeField] private Vector3 _markerOffset = new(0f, 0.4f, 0f);
+
+        public TMP_FontAsset ScreenLabelFont => _screenLabelFont;
+        public float ScreenLabelWidth => _screenLabelWidth;
+        public float ScreenLabelOutline => _screenLabelOutline;
+        public float ScreenEdgeMargin => _screenEdgeMargin;
+        public int ScreenLabelSortingOrder => _screenLabelSortingOrder;
+        public ScreenLabelStyle MarkerStyle => _markerStyle;
+        public ScreenLabelStyle CustomerStyle => _customerStyle;
+        public Vector3 MarkerOffset => _markerOffset;
         public float MarkerBobHeight => _markerBobHeight;
         public float MarkerBobSpeed => _markerBobSpeed;
         public float DeliveryMarkerRadius => _deliveryMarkerRadius;
         public float NotificationDuration => _notificationDuration;
         public float NotificationFade => _notificationFade;
         public int MaxNotifications => _maxNotifications;
-        public TextMeshPro PopupPrefab => _popupPrefab;
+        public ScreenLabelStyle PopupStyle => _popupStyle;
         public float PopupDuration => _popupDuration;
         public float PopupRise => _popupRise;
         public float ThrowArcHeight => _throwArcHeight;

@@ -9,6 +9,9 @@ namespace ShooterShop.Customers
         Shooting,
         Leaving,
         Searching,
-        Delivering
+        Delivering,
+        GoingToHandout,
+        WaitingForWeapon,
+        ReturningWeapon
     }
 }
