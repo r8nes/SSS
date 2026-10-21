@@ -36,6 +36,13 @@ namespace ShooterShop.Catalog
         [BoxGroup("Visual"), AssetsOnly]
         [SerializeField] private GameObject _displayPrefab;
 
+        [BoxGroup("Visual"), AssetsOnly, Required]
+        [InfoBox("Visual-only model placed in stand slots")]
+        [SerializeField] private GameObject _shelfModel;
+
+        [BoxGroup("Delivery"), MinValue(1), SuffixLabel("units")]
+        [SerializeField] private int _unitsPerBox = 4;
+
         public string DisplayName => _displayName;
         public ProductCategory Category => _category;
         public Sprite Icon => _icon;
@@ -44,6 +51,8 @@ namespace ShooterShop.Catalog
         public int SellPrice => _sellPrice;
         public int StorageSize => _storageSize;
         public GameObject DisplayPrefab => _displayPrefab;
+        public GameObject ShelfModel => _shelfModel;
+        public int UnitsPerBox => _unitsPerBox;
         public UpgradeConfig RequiredUpgrade => _requiredUpgrade;
         public bool IsAmmo => _category == ProductCategory.Ammo;
 

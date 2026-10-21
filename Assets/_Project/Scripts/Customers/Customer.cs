@@ -47,11 +47,15 @@ namespace ShooterShop.Customers
         [SyncVar(hook = nameof(OnStateSynced))]
         private CustomerState _state;
 
+        [SyncVar]
+        private int _queuePosition = -1;
+
         private ProductCatalog _catalog;
         private ICustomerInteraction _interaction;
         private CustomerRegistry _registry;
         private Vector3 _lastPosition;
         private Vector2 _move;
+        private Quaternion? _arrivalRotation;
 
         private static readonly int MoveX = Animator.StringToHash("MoveX");
         private static readonly int MoveY = Animator.StringToHash("MoveY");
@@ -62,7 +66,9 @@ namespace ShooterShop.Customers
         public CustomerState State => _state;
         public NavMeshAgent Agent => _agent;
         public float WaitingSince { get; private set; }
-        public int CounterSlot { get; set; } = -1;
+        public int QueuePosition => _queuePosition;
+        public bool IsInQueue => _queuePosition >= 0;
+        public bool CanBeServed => _state == CustomerState.Waiting && _queuePosition == 0 && HasRequest;
 
         public bool HasRequest => _catalog != null && _catalog.TryGet(_productIndex, out _);
 
@@ -137,21 +143,43 @@ namespace ShooterShop.Customers
         public void ServerFire() => RpcFire();
 
         [Server]
-        public void ServerMoveTo(Vector3 destination) => _agent.SetDestination(destination);
+        public void ServerSetQueuePosition(int position) => _queuePosition = position;
 
         [Server]
-        public void ServerFace(Quaternion rotation) => transform.rotation = rotation;
+        public void ServerSetAmount(int amount) => _amount = amount;
+
+        [Server]
+        public void ServerMoveTo(Vector3 destination, Quaternion? arrivalRotation = null)
+        {
+            _arrivalRotation = arrivalRotation;
+            _agent.SetDestination(destination);
+        }
+
+        [Server]
+        public bool ServerTickArrival()
+        {
+            if (!ServerHasArrived())
+                return false;
+
+            if (_arrivalRotation.HasValue)
+            {
+                transform.rotation = _arrivalRotation.Value;
+                _arrivalRotation = null;
+            }
+
+            return true;
+        }
 
         [Server]
         public bool ServerHasArrived() =>
             !_agent.pathPending && _agent.remainingDistance <= _agent.stoppingDistance + 0.05f;
 
         public string GetInteractionName() =>
-            _state == CustomerState.Waiting && HasRequest ? "Serve customer" : string.Empty;
+            CanBeServed ? "Serve customer" : string.Empty;
 
         public void Interact(InteractionsManager source)
         {
-            if (_state == CustomerState.Waiting && HasRequest)
+            if (CanBeServed)
                 _interaction.Open(this);
         }
 
@@ -195,7 +223,8 @@ namespace ShooterShop.Customers
             _label.text = _state switch
             {
                 CustomerState.Waiting when HasRequest => Request.Describe(),
-                CustomerState.Arriving => "...",
+                CustomerState.Browsing when HasRequest => $"Looking for {Request.Product.DisplayName}",
+                CustomerState.Arriving when HasRequest => Request.Describe(),
                 _ => string.Empty
             };
         }

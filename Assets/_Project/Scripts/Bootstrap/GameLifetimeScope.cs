@@ -11,6 +11,7 @@ using ShooterShop.Range;
 using ShooterShop.Sales;
 using ShooterShop.Saves;
 using ShooterShop.Storage;
+using ShooterShop.Store;
 using ShooterShop.Upgrades;
 using Sirenix.OdinInspector;
 using UnityEngine;
@@ -63,6 +64,12 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Range"), Required, SceneObjectsOnly]
         [SerializeField] private RangeLayout _rangeLayout;
 
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private StoreConfig _storeConfig;
+
+        [BoxGroup("Store"), Required, SceneObjectsOnly]
+        [SerializeField] private StoreLayout _storeLayout;
+
         [BoxGroup("Hud"), Required, SceneObjectsOnly]
         [SerializeField] private MoneyHudView _moneyHudView;
 
@@ -105,7 +112,19 @@ namespace ShooterShop.Bootstrap
             builder.RegisterInstance(_customerConfig);
             builder.RegisterComponent(_shopLayout);
             builder.Register<CustomerDirector>(Lifetime.Singleton).AsImplementedInterfaces();
-            builder.RegisterEntryPoint<CustomerSpawnRegistrar>();
+            builder.RegisterInstance(new InjectedPrefabs(_customerConfig.Prefab.gameObject, _storeConfig.BoxPrefab.gameObject));
+            builder.RegisterEntryPoint<InjectedPrefabRegistrar>();
+
+            builder.RegisterInstance(_storeConfig);
+            builder.RegisterComponent(_storeLayout);
+            builder.Register<CarryService>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
+            builder.Register<DeliveryService>(Lifetime.Singleton).AsImplementedInterfaces();
+            builder.RegisterEntryPoint<StartingStockDelivery>();
+            builder.RegisterBuildCallback(container =>
+            {
+                foreach (var stand in _storeLayout.Stands)
+                    container.Inject(stand);
+            });
             builder.Register<CustomerRegistry>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
 
             builder.RegisterComponent(_saleDialogView);

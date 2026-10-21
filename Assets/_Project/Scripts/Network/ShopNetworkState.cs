@@ -5,6 +5,7 @@ using ShooterShop.Customers;
 using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Storage;
+using ShooterShop.Store;
 using ShooterShop.Upgrades;
 using VContainer;
 
@@ -29,6 +30,7 @@ namespace ShooterShop.Network
         private ICustomerService _customers;
         private IDayStatistics _statistics;
         private IUnlocks _unlocks;
+        private IDeliveryService _delivery;
 
         public event Action MoneyChanged;
         public event Action StorageChanged;
@@ -40,14 +42,15 @@ namespace ShooterShop.Network
         public int FreeSpace => _capacity - _usedSpace;
 
         [Inject]
-        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics, IUnlocks unlocks)
+        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics, IUnlocks unlocks, IDeliveryService delivery)
         {
-            _unlocks = unlocks;
-            _customers = customers;
-            _statistics = statistics;
             _wallet = wallet;
             _warehouse = warehouse;
             _catalog = catalog;
+            _customers = customers;
+            _statistics = statistics;
+            _unlocks = unlocks;
+            _delivery = delivery;
         }
 
         public int GetStock(ProductConfig product) =>
@@ -142,6 +145,7 @@ namespace ShooterShop.Network
 
             _warehouse.TryAdd(product, amount);
             _statistics.RecordExpense(cost);
+            _delivery.Deliver(product, amount);
         }
 
         private void OnWalletChanged(int balance) => _money = balance;

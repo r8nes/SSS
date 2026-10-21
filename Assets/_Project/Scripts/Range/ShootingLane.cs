@@ -150,6 +150,20 @@ namespace ShooterShop.Range
             _flashUntil = Time.time + _hitFlashDuration;
         }
 
+#if UNITY_EDITOR
+        private void OnDrawGizmos()
+        {
+            if (_standPoint == null || _target == null)
+                return;
+
+            var stand = _standPoint.position + Vector3.up * 0.1f;
+            Gizmos.color = new Color(1f, 0.6f, 0.1f);
+            Gizmos.DrawWireSphere(stand, 0.3f);
+            Gizmos.DrawLine(stand + Vector3.up * 1.4f, _target.transform.position);
+            UnityEditor.Handles.Label(stand + Vector3.up * 0.6f, $"Lane {_number}");
+        }
+#endif
+
         private static string FormatTime(double seconds)
         {
             var total = Math.Max(0, (int)Math.Ceiling(seconds));

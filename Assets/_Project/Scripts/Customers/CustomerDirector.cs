@@ -9,6 +9,7 @@ using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Range;
 using ShooterShop.Storage;
+using ShooterShop.Store;
 using ShooterShop.Upgrades;
 using UnityEngine;
 using VContainer;
@@ -22,26 +23,32 @@ namespace ShooterShop.Customers
         private readonly CustomerConfig _config;
         private readonly RangeConfig _rangeConfig;
         private readonly ShopLayout _layout;
+        private readonly StoreLayout _store;
         private readonly ProductCatalog _catalog;
         private readonly IWarehouse _warehouse;
         private readonly IWallet _wallet;
         private readonly IShootingRange _range;
+        private readonly IDeliveryService _delivery;
         private readonly IDayState _day;
         private readonly IDayStatistics _statistics;
         private readonly IUnlocks _unlocks;
         private readonly IObjectResolver _resolver;
         private readonly List<Customer> _customers = new();
         private readonly Dictionary<Customer, ShootingLane> _lanes = new();
-        private readonly Customer[] _slots;
+        private readonly Dictionary<Customer, ProductStand> _stands = new();
+        private readonly HashSet<Customer> _holdingItems = new();
+        private readonly List<Customer> _queue = new();
 
         public CustomerDirector(
             CustomerConfig config,
             RangeConfig rangeConfig,
             ShopLayout layout,
+            StoreLayout store,
             ProductCatalog catalog,
             IWarehouse warehouse,
             IWallet wallet,
             IShootingRange range,
+            IDeliveryService delivery,
             IDayState day,
             IDayStatistics statistics,
             IUnlocks unlocks,
@@ -50,15 +57,16 @@ namespace ShooterShop.Customers
             _config = config;
             _rangeConfig = rangeConfig;
             _layout = layout;
+            _store = store;
             _catalog = catalog;
             _warehouse = warehouse;
             _wallet = wallet;
             _range = range;
+            _delivery = delivery;
             _day = day;
             _statistics = statistics;
             _unlocks = unlocks;
             _resolver = resolver;
-            _slots = new Customer[layout.CounterSlots.Count];
         }
 
         public int ActiveCount => _customers.Count;
@@ -77,8 +85,8 @@ namespace ShooterShop.Customers
                 if (await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation).SuppressCancellationThrow())
                     return;
 
-                if (_day.IsOpen && _customers.Count < _config.MaxCustomers && TryGetFreeSlot(out var slot))
-                    Spawn(slot);
+                if (_day.IsOpen && _customers.Count < _config.MaxCustomers)
+                    Spawn();
             }
         }
 
@@ -95,7 +103,7 @@ namespace ShooterShop.Customers
 
         public bool TrySell(Customer customer)
         {
-            if (customer.State != CustomerState.Waiting || !customer.HasRequest)
+            if (!customer.CanBeServed)
                 return false;
 
             var request = customer.Request;
@@ -103,6 +111,7 @@ namespace ShooterShop.Customers
             if (!_warehouse.TryRemove(request.Product, request.Amount))
                 return false;
 
+            _holdingItems.Remove(customer);
             _wallet.Add(request.Price);
             _statistics.RecordSale(request.Price, request.IsRangeVisit);
 
@@ -126,7 +135,7 @@ namespace ShooterShop.Customers
             {
                 var customer = _customers[i];
 
-                if (customer != null && customer.State is CustomerState.Arriving or CustomerState.Waiting)
+                if (customer != null && customer.State is CustomerState.Browsing or CustomerState.Arriving or CustomerState.Waiting)
                     Leave(customer);
             }
         }
@@ -141,14 +150,19 @@ namespace ShooterShop.Customers
 
             switch (customer.State)
             {
-                case CustomerState.Arriving when customer.ServerHasArrived():
-                    customer.ServerFace(_layout.CounterSlots[customer.CounterSlot].rotation);
+                case CustomerState.Browsing when customer.ServerTickArrival():
+                    PickFromStand(customer);
+                    break;
+                case CustomerState.Arriving when customer.ServerTickArrival():
                     customer.ServerSetState(CustomerState.Waiting);
                     break;
                 case CustomerState.Waiting when Time.time - customer.WaitingSince > _config.Patience:
                     Leave(customer);
                     break;
-                case CustomerState.GoingToLane when customer.ServerHasArrived():
+                case CustomerState.Waiting:
+                    customer.ServerTickArrival();
+                    break;
+                case CustomerState.GoingToLane when customer.ServerTickArrival():
                     StartShooting(customer);
                     break;
                 case CustomerState.Leaving when customer.ServerHasArrived():
@@ -158,36 +172,63 @@ namespace ShooterShop.Customers
             }
         }
 
-        private void Spawn(int slot)
+        private void Spawn()
         {
             var entrance = _layout.Entrance;
             var customer = _resolver.Instantiate(_config.Prefab, entrance.position, entrance.rotation);
             var request = PickRequest(customer);
+            var stand = FindStand(request.Product);
 
             customer.ServerInitialize(request, _config.WalkSpeed);
             NetworkServer.Spawn(customer.gameObject);
-
-            customer.CounterSlot = slot;
-            _slots[slot] = customer;
             _customers.Add(customer);
-            customer.ServerMoveTo(_layout.CounterSlots[slot].position);
+
+            if (stand == null)
+            {
+                Leave(customer);
+                return;
+            }
+
+            _stands[customer] = stand;
+            customer.ServerSetState(CustomerState.Browsing);
+            customer.ServerMoveTo(stand.CustomerPoint.position, stand.CustomerPoint.rotation);
+        }
+
+        private void PickFromStand(Customer customer)
+        {
+            if (_queue.Count >= _layout.QueuePoints.Count)
+                return;
+
+            var request = customer.Request;
+            var taken = _stands[customer].ServerTake(request.Product, request.Amount);
+
+            if (taken == 0)
+            {
+                Leave(customer);
+                return;
+            }
+
+            _holdingItems.Add(customer);
+            customer.ServerSetAmount(taken);
+            customer.ServerSetState(CustomerState.Arriving);
+            _queue.Add(customer);
+            MoveToQueuePosition(customer, _queue.Count - 1);
         }
 
         private void SendToLane(Customer customer, ShootingLane lane)
         {
-            FreeSlot(customer);
+            RemoveFromQueue(customer);
             customer.ServerSetState(CustomerState.GoingToLane);
-            customer.ServerMoveTo(lane.StandPoint.position);
+
+            var stand = lane.StandPoint.position;
+            var toTarget = Vector3.ProjectOnPlane(lane.Target.position - stand, Vector3.up);
+            customer.ServerMoveTo(stand, Quaternion.LookRotation(toTarget));
         }
 
         private void StartShooting(Customer customer)
         {
-            var lane = _lanes[customer];
-            var toTarget = Vector3.ProjectOnPlane(lane.Target.position - customer.transform.position, Vector3.up);
-
-            customer.ServerFace(Quaternion.LookRotation(toTarget));
             customer.ServerSetState(CustomerState.Shooting);
-            _range.StartSession(lane, customer);
+            _range.StartSession(_lanes[customer], customer);
         }
 
         private void OnSessionFinished(ShootingLane lane)
@@ -202,7 +243,9 @@ namespace ShooterShop.Customers
 
         private void Leave(Customer customer)
         {
-            FreeSlot(customer);
+            RemoveFromQueue(customer);
+            ReturnItems(customer);
+            _stands.Remove(customer);
 
             if (_lanes.Remove(customer, out var lane))
                 _range.Release(lane);
@@ -211,19 +254,47 @@ namespace ShooterShop.Customers
             customer.ServerMoveTo(_layout.Exit.position);
         }
 
-        private void FreeSlot(Customer customer)
+        private void ReturnItems(Customer customer)
         {
-            if (customer.CounterSlot >= 0 && _slots[customer.CounterSlot] == customer)
-                _slots[customer.CounterSlot] = null;
+            if (!_holdingItems.Remove(customer) || !customer.HasRequest)
+                return;
 
-            customer.CounterSlot = -1;
+            var request = customer.Request;
+            var left = request.Amount;
+
+            if (_stands.TryGetValue(customer, out var stand))
+                left -= stand.ServerPut(request.Product, left);
+
+            if (left > 0)
+                _delivery.DeliverNow(request.Product, left);
         }
 
-        private bool TryGetFreeSlot(out int slot)
+        private void RemoveFromQueue(Customer customer)
         {
-            slot = Array.FindIndex(_slots, s => s == null);
-            return slot >= 0;
+            if (!_queue.Remove(customer))
+                return;
+
+            customer.ServerSetQueuePosition(-1);
+
+            for (var i = 0; i < _queue.Count; i++)
+                if (_queue[i].QueuePosition != i)
+                    MoveToQueuePosition(_queue[i], i);
         }
+
+        private void MoveToQueuePosition(Customer customer, int position)
+        {
+            var point = _layout.QueuePoints[position];
+            customer.ServerSetQueuePosition(position);
+            customer.ServerMoveTo(point.position, point.rotation);
+        }
+
+        private ProductStand FindStand(ProductConfig product)
+        {
+            var accepting = _store.Stands.Where(s => s.Accepts(product)).ToList();
+            return accepting.FirstOrDefault(s => s.CountOf(product) > 0) ?? accepting.FirstOrDefault();
+        }
+
+        private int OnShelves(ProductConfig product) => _store.Stands.Sum(s => s.CountOf(product));
 
         private CustomerRequest PickRequest(Customer customer)
         {
@@ -239,19 +310,14 @@ namespace ShooterShop.Customers
 
             var shopProduct = PickProduct(_catalog.Products);
             var maxAmount = shopProduct.IsAmmo ? _config.MaxAmmoAmount : _config.MaxWeaponAmount;
-            var stock = _warehouse.GetAmount(shopProduct);
-
-            if (stock > 0)
-                maxAmount = Mathf.Min(maxAmount, stock);
-
             return new CustomerRequest(shopProduct, Random.Range(1, maxAmount + 1));
         }
 
         private ProductConfig PickProduct(IReadOnlyList<ProductConfig> candidates)
         {
             var pool = candidates.Where(p => _unlocks.IsUnlocked(p.RequiredUpgrade)).ToList();
-            var inStock = pool.Where(p => _warehouse.GetAmount(p) > 0).ToList();
-            var source = inStock.Count > 0 && Random.value < _config.InStockRequestChance ? inStock : pool;
+            var onShelves = pool.Where(p => OnShelves(p) > 0).ToList();
+            var source = onShelves.Count > 0 && Random.value < _config.InStockRequestChance ? onShelves : pool;
             return source[Random.Range(0, source.Count)];
         }
     }
