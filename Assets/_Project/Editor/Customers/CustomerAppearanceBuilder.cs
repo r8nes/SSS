@@ -20,7 +20,6 @@ namespace ShooterShop.Editor.Customers
         private const string UpperBodyMaskPath = AnimationsFolder + "/CustomerUpperBody.mask";
         private const string AppearancesFolder = "Assets/_Project/Prefabs/Customers/Appearances";
         private const string CatalogPath = "Assets/_Project/Configs/CustomerAppearanceCatalog.asset";
-        private const string HandWeaponPath = "Assets/_Project/Prefabs/Rentals/Rental Pistol Display.prefab";
 
         private static readonly string[] SourceFolders =
         {
@@ -73,10 +72,6 @@ namespace ShooterShop.Editor.Customers
 
             var catalog = LoadOrCreate<CustomerAppearanceCatalog>(CatalogPath);
             catalog.EditorSetAppearances(appearances);
-
-            var serializedCatalog = new SerializedObject(catalog);
-            serializedCatalog.FindProperty("_handWeapon").objectReferenceValue = AssetDatabase.LoadAssetAtPath<GameObject>(HandWeaponPath);
-            serializedCatalog.ApplyModifiedPropertiesWithoutUndo();
 
             AssetDatabase.SaveAssets();
             Debug.Log($"[CustomerAppearanceBuilder] Built {appearances.Count} of {sources.Count} appearances");
@@ -245,7 +240,7 @@ namespace ShooterShop.Editor.Customers
             var mask = LoadOrCreate<AvatarMask>(UpperBodyMaskPath);
 
             for (var part = AvatarMaskBodyPart.Root; part < AvatarMaskBodyPart.LastBodyPart; part++)
-                mask.SetHumanoidBodyPartActive(part, part is AvatarMaskBodyPart.Body or AvatarMaskBodyPart.Head
+                mask.SetHumanoidBodyPartActive(part, part is AvatarMaskBodyPart.Head
                     or AvatarMaskBodyPart.LeftArm or AvatarMaskBodyPart.RightArm
                     or AvatarMaskBodyPart.LeftFingers or AvatarMaskBodyPart.RightFingers);
 

@@ -1,0 +1,19 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c103de7b8245f71459954c339b48bc06, type: 3}
+  m_Name: MenuCameraTourConfig
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Menu.MenuCameraTourConfig
+  _defaultShotDuration: 12
+  _fadeDuration: 1.2
+  _blackHold: 0.4
+  _moveEase: 4
+  _shuffle: 0

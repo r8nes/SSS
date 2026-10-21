@@ -38,13 +38,16 @@ namespace ShooterShop.Purchasing
         public Button IncreaseButton => _increaseButton;
         public Button BuyButton => _buyButton;
 
-        public void SetInfo(string displayName, Sprite icon, string price)
+        public void SetInfo(string displayName, Sprite icon)
         {
             _name.text = displayName;
-            _price.text = price;
             _icon.sprite = icon;
             _icon.enabled = icon != null;
         }
+
+        public void SetPrice(string price) => _price.text = price;
+
+        public void SetVisible(bool isVisible) => gameObject.SetActive(isVisible);
 
         public void SetStock(string stock) => _stock.text = stock;
 

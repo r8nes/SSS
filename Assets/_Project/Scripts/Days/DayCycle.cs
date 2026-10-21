@@ -4,6 +4,7 @@ using Cysharp.Threading.Tasks;
 using Mirror;
 using ShooterShop.Customers;
 using ShooterShop.Feedback;
+using ShooterShop.Network;
 using ShooterShop.Saves;
 using VContainer.Unity;
 
@@ -17,10 +18,12 @@ namespace ShooterShop.Days
         private readonly StartingState _startingState;
         private readonly DayEventCatalog _events;
         private readonly IShopFeed _feed;
+        private readonly ISupplierPricing _pricing;
         private bool _warnedClosing;
 
-        public DayCycle(DayConfig config, DayNetworkState state, ICustomerService customers, StartingState startingState, DayEventCatalog events, IShopFeed feed)
+        public DayCycle(DayConfig config, DayNetworkState state, ICustomerService customers, StartingState startingState, DayEventCatalog events, IShopFeed feed, ISupplierPricing pricing)
         {
+            _pricing = pricing;
             _config = config;
             _state = state;
             _customers = customers;
@@ -81,6 +84,7 @@ namespace ShooterShop.Days
         private void PrepareDay(int day)
         {
             _state.ServerPrepare(day, _events.PickIndex(day));
+            _pricing.ServerRollPrices();
             PrepareAnnouncementAsync().Forget();
         }
 

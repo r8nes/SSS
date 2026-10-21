@@ -4,6 +4,7 @@ using ShooterShop.Catalog;
 using ShooterShop.Customers;
 using ShooterShop.Days;
 using ShooterShop.Economy;
+using ShooterShop.Feedback;
 using ShooterShop.Storage;
 using ShooterShop.Store;
 using ShooterShop.Upgrades;
@@ -11,7 +12,7 @@ using VContainer;
 
 namespace ShooterShop.Network
 {
-    public sealed class ShopNetworkState : NetworkBehaviour, IShopState, IShopCommands
+    public sealed class ShopNetworkState : NetworkBehaviour, IShopState, IShopCommands, ISupplierPricing
     {
         [SyncVar(hook = nameof(OnMoneySynced))]
         private int _money;
@@ -23,6 +24,7 @@ namespace ShooterShop.Network
         private int _capacity;
 
         private readonly SyncDictionary<int, int> _stock = new();
+        private readonly SyncDictionary<int, int> _priceChanges = new();
 
         private IWallet _wallet;
         private IWarehouse _warehouse;
@@ -32,10 +34,13 @@ namespace ShooterShop.Network
         private IUnlocks _unlocks;
         private IDeliveryService _delivery;
         private IDayState _day;
+        private SupplierPricingConfig _pricing;
+        private IShopFeed _feed;
 
         public event Action MoneyChanged;
         public event Action StorageChanged;
         public event Action<ProductConfig> StockChanged;
+        public event Action PricesChanged;
 
         public int Money => _money;
         public int UsedSpace => _usedSpace;
@@ -43,8 +48,10 @@ namespace ShooterShop.Network
         public int FreeSpace => _capacity - _usedSpace;
 
         [Inject]
-        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics, IUnlocks unlocks, IDeliveryService delivery, IDayState day)
+        public void Construct(IWallet wallet, IWarehouse warehouse, ProductCatalog catalog, ICustomerService customers, IDayStatistics statistics, IUnlocks unlocks, IDeliveryService delivery, IDayState day, SupplierPricingConfig pricing, IShopFeed feed)
         {
+            _pricing = pricing;
+            _feed = feed;
             _day = day;
             _wallet = wallet;
             _warehouse = warehouse;
@@ -59,7 +66,41 @@ namespace ShooterShop.Network
             _stock.TryGetValue(_catalog.IndexOf(product), out var amount) ? amount : 0;
 
         public int GetPurchaseCost(ProductConfig product, int amount) =>
-            UnityEngine.Mathf.RoundToInt(product.BuyPrice * amount * (1f - (_day?.CurrentEvent?.PurchaseDiscount ?? 0f)));
+            UnityEngine.Mathf.RoundToInt(product.BuyPrice * amount
+                * (1f + GetPriceChangePercent(product) / 100f)
+                * (1f - (_day?.CurrentEvent?.PurchaseDiscount ?? 0f)));
+
+        public int GetPriceChangePercent(ProductConfig product) =>
+            _priceChanges.TryGetValue(_catalog.IndexOf(product), out var percent) ? percent : 0;
+
+        [Server]
+        public void ServerRollPrices()
+        {
+            _priceChanges.Clear();
+            ProductConfig bestSale = null;
+            var bestPercent = 0;
+
+            foreach (var product in _catalog.Products)
+            {
+                var percent = _pricing.RollChangePercent();
+
+                if (percent == 0)
+                    continue;
+
+                _priceChanges[_catalog.IndexOf(product)] = percent;
+
+                if (percent < bestPercent)
+                {
+                    bestPercent = percent;
+                    bestSale = product;
+                }
+            }
+
+            PricesChanged?.Invoke();
+
+            if (bestSale != null)
+                _feed.Notify($"Supplier sale today: {bestSale.DisplayName} {bestPercent}%", NotificationKind.Good);
+        }
 
         public void Purchase(ProductConfig product, int amount)
         {
@@ -109,11 +150,13 @@ namespace ShooterShop.Network
         public override void OnStartClient()
         {
             _stock.OnChange += OnStockSynced;
+            _priceChanges.OnChange += OnPricesSynced;
         }
 
         public override void OnStopClient()
         {
             _stock.OnChange -= OnStockSynced;
+            _priceChanges.OnChange -= OnPricesSynced;
         }
 
         [Command(requiresAuthority = false)]
@@ -169,6 +212,12 @@ namespace ShooterShop.Network
         }
 
         private void OnMoneySynced(int _, int __) => MoneyChanged?.Invoke();
+
+        private void OnPricesSynced(SyncIDictionary<int, int>.Operation _, int __, int ___)
+        {
+            if (!isServer)
+                PricesChanged?.Invoke();
+        }
 
         private void OnStorageSynced(int _, int __) => StorageChanged?.Invoke();
 

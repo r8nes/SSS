@@ -21,6 +21,8 @@ namespace ShooterShop.Purchasing
         private readonly IShopCommands _commands;
         private readonly IPlayerInputLock _inputLock;
         private readonly IUnlocks _unlocks;
+        private readonly ISupplierPricing _pricing;
+        private CatalogTab _tab = CatalogTab.Weapons;
         private readonly Dictionary<ProductConfig, ProductCardView> _cards = new();
         private readonly Dictionary<ProductConfig, int> _amounts = new();
 
@@ -31,8 +33,10 @@ namespace ShooterShop.Purchasing
             IShopState state,
             IShopCommands commands,
             IPlayerInputLock inputLock,
-            IUnlocks unlocks)
+            IUnlocks unlocks,
+            ISupplierPricing pricing)
         {
+            _pricing = pricing;
             _unlocks = unlocks;
             _terminal = terminal;
             _view = view;
@@ -49,8 +53,10 @@ namespace ShooterShop.Purchasing
 
             _terminal.Interacted += Toggle;
             _view.CloseButton.onClick.AddListener(Close);
-            _view.StockTabButton.onClick.AddListener(ShowStock);
+            _view.WeaponsTabButton.onClick.AddListener(ShowWeapons);
+            _view.AmmoTabButton.onClick.AddListener(ShowAmmo);
             _view.UpgradesTabButton.onClick.AddListener(ShowUpgrades);
+            _pricing.PricesChanged += RefreshAllPrices;
             _unlocks.Changed += RefreshAllStock;
             _state.MoneyChanged += RefreshStatus;
             _state.StorageChanged += RefreshStatus;
@@ -69,8 +75,10 @@ namespace ShooterShop.Purchasing
         {
             _terminal.Interacted -= Toggle;
             _view.CloseButton.onClick.RemoveListener(Close);
-            _view.StockTabButton.onClick.RemoveListener(ShowStock);
+            _view.WeaponsTabButton.onClick.RemoveListener(ShowWeapons);
+            _view.AmmoTabButton.onClick.RemoveListener(ShowAmmo);
             _view.UpgradesTabButton.onClick.RemoveListener(ShowUpgrades);
+            _pricing.PricesChanged -= RefreshAllPrices;
             _unlocks.Changed -= RefreshAllStock;
             _state.MoneyChanged -= RefreshStatus;
             _state.StorageChanged -= RefreshStatus;
@@ -92,7 +100,8 @@ namespace ShooterShop.Purchasing
             _view.SetMessage(string.Empty);
             RefreshStatus();
             RefreshAllStock();
-            _view.ShowStockTab(true);
+            RefreshAllPrices();
+            ShowTab(_tab);
             _view.SetOpen(true);
         }
 
@@ -102,9 +111,32 @@ namespace ShooterShop.Purchasing
             _inputLock.Release(this);
         }
 
-        private void ShowStock() => _view.ShowStockTab(true);
+        private void ShowWeapons() => ShowTab(CatalogTab.Weapons);
 
-        private void ShowUpgrades() => _view.ShowStockTab(false);
+        private void ShowAmmo() => ShowTab(CatalogTab.Ammo);
+
+        private void ShowUpgrades() => ShowTab(CatalogTab.Upgrades);
+
+        private void ShowTab(CatalogTab tab)
+        {
+            _tab = tab;
+            _view.ShowTab(tab);
+
+            foreach (var (product, card) in _cards)
+                card.SetVisible(tab == (product.IsAmmo ? CatalogTab.Ammo : CatalogTab.Weapons));
+        }
+
+        private void RefreshAllPrices()
+        {
+            foreach (var product in _catalog.Products)
+            {
+                if (!_cards.TryGetValue(product, out var card))
+                    continue;
+
+                card.SetPrice(FormatPrice(product));
+                RefreshAmount(product);
+            }
+        }
 
         private void RefreshAllStock()
         {
@@ -115,7 +147,8 @@ namespace ShooterShop.Purchasing
         private void CreateCard(ProductConfig product)
         {
             var card = _view.AddCard();
-            card.SetInfo(product.DisplayName, product.Icon, FormatPrice(product));
+            card.SetInfo(product.DisplayName, product.Icon);
+            card.SetPrice(FormatPrice(product));
             card.DecreaseButton.onClick.AddListener(() => ChangeAmount(product, -1));
             card.IncreaseButton.onClick.AddListener(() => ChangeAmount(product, 1));
             card.BuyButton.onClick.AddListener(() => Buy(product));
@@ -171,8 +204,19 @@ namespace ShooterShop.Purchasing
             _cards[product].SetAmount(amount, $"Buy {FormatMoney(_state.GetPurchaseCost(product, amount))}");
         }
 
-        private string FormatPrice(ProductConfig product) =>
-            product.IsAmmo ? $"{FormatMoney(_state.GetPurchaseCost(product, 1))} / {product.PackSize} rds" : FormatMoney(_state.GetPurchaseCost(product, 1));
+        private string FormatPrice(ProductConfig product)
+        {
+            var change = _pricing.GetPriceChangePercent(product);
+            var current = FormatMoney(_state.GetPurchaseCost(product, 1));
+            var unit = product.IsAmmo ? $" / {product.PackSize} rds" : string.Empty;
+
+            if (change == 0)
+                return current + unit;
+
+            var color = change < 0 ? "#6EE36E" : "#FF6B5E";
+            var original = $"<s><color=#9A9A9A>{FormatMoney(product.BuyPrice)}</color></s>";
+            return $"{original} <color={color}>{current}</color>{unit}\n<color={color}><b>{change:+0;-0}%</b></color>";
+        }
 
         private static string FormatMoney(int amount) => $"${amount:N0}";
     }

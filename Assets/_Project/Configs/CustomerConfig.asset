@@ -16,7 +16,18 @@ MonoBehaviour:
   _spawnInterval: {x: 8, y: 15}
   _maxCustomers: 3
   _patience: 45
-  _walkSpeed: 2.5
+  _searchPatience: 25
+  _walkSpeed: 1.7
   _inStockRequestChance: 0.75
   _maxWeaponAmount: 1
   _maxAmmoAmount: 4
+  _tipWindow: 15
+  _maxTipShare: 0.2
+  _priceSensitivity: 0.015
+  _hitsToKill: 2
+  _panicDuration: 30
+  _panicSpeedMultiplier: 2.2
+  _deathImpulse: 120
+  _corpseSinkDelay: 3
+  _corpseSinkDuration: 6
+  _corpseSinkDepth: 1.2

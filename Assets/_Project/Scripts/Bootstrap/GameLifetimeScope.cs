@@ -13,6 +13,7 @@ using ShooterShop.Rentals;
 using ShooterShop.Sales;
 using ShooterShop.Saves;
 using ShooterShop.Storage;
+using ShooterShop.Street;
 using ShooterShop.Store;
 using ShooterShop.Upgrades;
 using Sirenix.OdinInspector;
@@ -28,6 +29,9 @@ namespace ShooterShop.Bootstrap
         [SerializeField] private EconomyConfig _economyConfig;
 
         [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private SupplierPricingConfig _supplierPricing;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private ProductCatalog _productCatalog;
 
         [BoxGroup("Configs"), Required, InlineEditor]
@@ -35,6 +39,12 @@ namespace ShooterShop.Bootstrap
 
         [BoxGroup("Configs"), Required]
         [SerializeField] private CustomerAppearanceCatalog _customerAppearances;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private PedestrianConfig _pedestrianConfig;
+
+        [BoxGroup("Street"), Required, SceneObjectsOnly]
+        [SerializeField] private StreetLayout _streetLayout;
 
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private RangeConfig _rangeConfig;
@@ -118,7 +128,8 @@ namespace ShooterShop.Bootstrap
 
             builder.Register<Wallet>(Lifetime.Singleton).As<IWallet>();
             builder.Register<Warehouse>(Lifetime.Singleton).As<IWarehouse>();
-            builder.RegisterComponent(_shopNetworkState).As<IShopState, IShopCommands>();
+            builder.RegisterComponent(_shopNetworkState).As<IShopState, IShopCommands, ISupplierPricing>();
+            builder.RegisterInstance(_supplierPricing);
 
             builder.RegisterComponent(_shopFeed).As<IShopFeed, IShopFeedEvents>();
             builder.RegisterComponent(_notificationView);
@@ -156,7 +167,12 @@ namespace ShooterShop.Bootstrap
             builder.RegisterInstance(_customerAppearances);
             builder.RegisterComponent(_shopLayout);
             builder.Register<CustomerDirector>(Lifetime.Singleton).AsImplementedInterfaces();
-            builder.RegisterInstance(new InjectedPrefabs(_customerConfig.Prefab.gameObject, _storeConfig.BoxPrefab.gameObject));
+            builder.RegisterInstance(new InjectedPrefabs(_customerConfig.Prefab.gameObject, _storeConfig.BoxPrefab.gameObject, _pedestrianConfig.Prefab.gameObject));
+
+            builder.RegisterInstance(_pedestrianConfig);
+            builder.RegisterComponent(_streetLayout);
+            builder.Register<PedestrianRegistry>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
+            builder.Register<PedestrianDirector>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.RegisterEntryPoint<InjectedPrefabRegistrar>();
 
             builder.RegisterInstance(_feedbackConfig);

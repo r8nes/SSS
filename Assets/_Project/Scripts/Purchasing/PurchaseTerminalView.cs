@@ -1,5 +1,6 @@
 using ShooterShop.Upgrades;
 using Sirenix.OdinInspector;
+using UnityEngine.Serialization;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -24,7 +25,11 @@ namespace ShooterShop.Purchasing
         [SerializeField] private TMP_Text _message;
 
         [BoxGroup("Tabs"), Required]
-        [SerializeField] private Button _stockTabButton;
+        [FormerlySerializedAs("_stockTabButton")]
+        [SerializeField] private Button _weaponsTabButton;
+
+        [BoxGroup("Tabs"), Required]
+        [SerializeField] private Button _ammoTabButton;
 
         [BoxGroup("Tabs"), Required]
         [SerializeField] private Button _upgradesTabButton;
@@ -48,7 +53,8 @@ namespace ShooterShop.Purchasing
         [SerializeField] private UpgradeCardView _upgradeCardPrefab;
 
         public Button CloseButton => _closeButton;
-        public Button StockTabButton => _stockTabButton;
+        public Button WeaponsTabButton => _weaponsTabButton;
+        public Button AmmoTabButton => _ammoTabButton;
         public Button UpgradesTabButton => _upgradesTabButton;
         public bool IsOpen => _window.activeSelf;
 
@@ -64,12 +70,13 @@ namespace ShooterShop.Purchasing
 
         public UpgradeCardView AddUpgradeCard() => Instantiate(_upgradeCardPrefab, _upgradeCardsRoot);
 
-        public void ShowStockTab(bool showStock)
+        public void ShowTab(CatalogTab tab)
         {
-            _stockPanel.SetActive(showStock);
-            _upgradesPanel.SetActive(!showStock);
-            _stockTabButton.interactable = !showStock;
-            _upgradesTabButton.interactable = showStock;
+            _stockPanel.SetActive(tab != CatalogTab.Upgrades);
+            _upgradesPanel.SetActive(tab == CatalogTab.Upgrades);
+            _weaponsTabButton.interactable = tab != CatalogTab.Weapons;
+            _ammoTabButton.interactable = tab != CatalogTab.Ammo;
+            _upgradesTabButton.interactable = tab != CatalogTab.Upgrades;
         }
     }
 }

@@ -1,0 +1,35 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cd0f326f44e2e504da610056c584f75c, type: 3}
+  m_Name: PedestrianConfig
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Street.PedestrianConfig
+  _prefab: {fileID: 2517344749842895431, guid: 40ce355d40d285345b5e3d3827637377, type: 3}
+  _count: 6
+  _walkSpeed: {x: 1.1, y: 1.6}
+  _idleTime: {x: 1, y: 6}
+  _walkBlendValue: 5
+  _animationSmoothing: 10
+  _interactionName: Talk
+  _replyDuration: 3
+  _talkPause: 3
+  _replyOffset: {x: 0, y: 1.15, z: 0}
+  _replies:
+  - Leave me alone.
+  - Not interested.
+  - Do I know you?
+  - Get lost, pal.
+  - I'm busy.
+  - Don't talk to me.
+  - Go bother someone else.
+  - Ugh. What?
+  - I've got no money.
+  - Back off.

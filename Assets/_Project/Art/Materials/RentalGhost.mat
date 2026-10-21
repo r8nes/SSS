@@ -8,18 +8,17 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: RentalGhost
-  m_Shader: {fileID: 4800000, guid: 650dd9526735d5b46b79224bc6e94025, type: 3}
+  m_Shader: {fileID: 4800000, guid: dc5553854e0e36e4d96f7f54f3f4b8f1, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
-  m_ValidKeywords:
+  m_ValidKeywords: []
+  m_InvalidKeywords:
   - _SURFACE_TYPE_TRANSPARENT
-  m_InvalidKeywords: []
   m_LightmapFlags: 4
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
-  m_CustomRenderQueue: 3000
-  stringTagMap:
-    RenderType: Transparent
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
   disabledShaderPasses:
   - TransparentDepthPrepass
   - MOTIONVECTORS
@@ -50,6 +49,8 @@ Material:
     - _DstBlendAlpha: 10
     - _DstBlendRefraction: 10
     - _QueueOffset: 0
+    - _RimBoost: 0.8
+    - _RimPower: 2.5
     - _SampleGI: 0
     - _ScreenSpaceReflectionsContributeTransparent: 1
     - _SrcBlend: 5
@@ -60,7 +61,7 @@ Material:
     - _ZWrite: 0
     m_Colors:
     - _BaseColor: {r: 1, g: 0.55, b: 0.1, a: 0.45}
-    - _Color: {r: 1, g: 0.54999995, b: 0.09999997, a: 0.45}
+    - _Color: {r: 1, g: 0.55, b: 0.1, a: 0.45}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
 --- !u!114 &6296596058511146492

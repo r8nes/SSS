@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using ShooterShop.Catalog;
 using ShooterShop.Feedback;
 using ShooterShop.Range;
+using ShooterShop.Rentals;
 using Sirenix.OdinInspector;
 using TMPro;
 using UnityEngine;
@@ -54,11 +55,7 @@ namespace ShooterShop.Customers
         [BoxGroup("Request"), Required, ChildGameObjectsOnly]
         [SerializeField] private SpriteRenderer _requestIcon;
 
-        [BoxGroup("Range")]
-        [SerializeField] private string _weaponLayer = "Pistol";
 
-        [BoxGroup("Range")]
-        [SerializeField] private string _fireState = "Fire";
 
         [SyncVar]
         private int _appearanceIndex = -1;
@@ -100,23 +97,21 @@ namespace ShooterShop.Customers
         private Animator _animator;
         private CustomerRagdoll _ragdoll;
         private GameObject _handWeapon;
+        private int _handWeaponIndex = -1;
+        private RentalWeaponCatalog _rentalWeapons;
+        private AppearanceBody _body;
         private int _hitsTaken;
         private CustomerRegistry _registry;
         private IScreenLabels _screenLabels;
         private IViewCamera _viewCamera;
         private FeedbackConfig _feedback;
         private ScreenLabel _screenLabel;
-        private Vector3 _lastPosition;
-        private Vector2 _move;
         private Quaternion? _arrivalRotation;
         private bool _isHighlighted;
         private MaterialPropertyBlock _patienceBlock;
 
         private static readonly int BaseColor = Shader.PropertyToID("_BaseColor");
 
-        private static readonly int MoveX = Animator.StringToHash("MoveX");
-        private static readonly int MoveY = Animator.StringToHash("MoveY");
-        private static readonly int IsGrounded = Animator.StringToHash("IsGrounded");
 
         public event Action<Customer> StateChanged;
 
@@ -146,8 +141,9 @@ namespace ShooterShop.Customers
         }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback, ICustomerDamage damage, CustomerAppearanceCatalog appearances)
+        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback, ICustomerDamage damage, CustomerAppearanceCatalog appearances, RentalWeaponCatalog rentalWeapons)
         {
+            _rentalWeapons = rentalWeapons;
             _appearances = appearances;
             _damage = damage;
             _screenLabels = screenLabels;
@@ -164,7 +160,6 @@ namespace ShooterShop.Customers
             _label.gameObject.SetActive(false);
             _agent.enabled = isServer;
             BuildAppearance();
-            _lastPosition = transform.position;
 
             _registry.Add(this);
             RefreshWeapon();
@@ -175,6 +170,7 @@ namespace ShooterShop.Customers
         public override void OnStopClient()
         {
             _registry.Remove(this);
+            _body?.Dispose();
             _screenLabels.Release(_screenLabel);
             _screenLabel = null;
         }
@@ -185,14 +181,7 @@ namespace ShooterShop.Customers
                 return;
 
             TickPatience();
-
-            var velocity = (transform.position - _lastPosition) / deltaTime;
-            _lastPosition = transform.position;
-
-            var local = transform.InverseTransformDirection(velocity) * (_walkBlendValue / Mathf.Max(0.1f, _walkSpeed));
-            _move = Vector2.Lerp(_move, new Vector2(local.x, local.z), deltaTime * _animationSmoothing);
-            _animator.SetFloat(MoveX, _move.x);
-            _animator.SetFloat(MoveY, _move.y);
+            _body.TickLocomotion(deltaTime, _walkBlendValue, _animationSmoothing);
         }
 
         [Server]
@@ -361,54 +350,53 @@ namespace ShooterShop.Customers
         }
 
         [ClientRpc]
-        private void RpcFire()
+        private void RpcFire() => _body?.Kick();
+
+        public void ClientPostAnimation(float deltaTime)
         {
-            if (_animator == null)
-                return;
-
-            var layer = _animator.GetLayerIndex(_weaponLayer);
-
-            if (layer >= 0)
-                _animator.Play(_fireState, layer, 0f);
+            if (_body != null && _state == CustomerState.Shooting && _rentalWeapon >= 0)
+                _body.ApplyAimPose(deltaTime);
         }
 
         private void RefreshWeapon()
         {
             var isHoldingRental = _rentalWeapon >= 0 && _state is CustomerState.GoingToLane or CustomerState.Shooting or CustomerState.ReturningWeapon;
-            var isShooting = isHoldingRental && _state == CustomerState.Shooting;
-
             if (_animator == null)
                 return;
 
-            var layer = _animator.GetLayerIndex(_weaponLayer);
+            RefreshHandWeapon(isHoldingRental ? _rentalWeapon : -1);
+        }
+
+        private void RefreshHandWeapon(int weapon)
+        {
+            if (weapon == _handWeaponIndex || _body == null)
+                return;
+
+            _handWeaponIndex = weapon;
 
             if (_handWeapon != null)
-                _handWeapon.SetActive(isHoldingRental);
+                Destroy(_handWeapon);
 
-            if (layer >= 0)
-                _animator.SetLayerWeight(layer, isShooting ? 1f : 0f);
+            _handWeapon = null;
+
+            if (!_rentalWeapons.TryGet(weapon, out var config))
+                return;
+
+            _handWeapon = Instantiate(config.DisplayModel, _body.Appearance.RightHand, false);
+            _handWeapon.transform.SetLocalPositionAndRotation(_appearances.HandWeaponPosition, _appearances.HandWeaponRotation);
         }
 
         private void BuildAppearance()
         {
-            if (!_appearances.TryGet(_appearanceIndex, out var prefab))
+            _body = AppearanceBody.Create(_appearances, _appearanceIndex, transform);
+
+            if (_body == null)
                 return;
 
-            var appearance = Instantiate(prefab, transform, false);
-            appearance.transform.SetLocalPositionAndRotation(_appearances.ModelOffset, Quaternion.identity);
+            _animator = _body.Animator;
+            _ragdoll = _body.Ragdoll;
+            _outline.SetRenderers(_body.Appearance.Renderers);
 
-            _animator = appearance.Animator;
-            _ragdoll = appearance.Ragdoll;
-            _ragdoll.Freeze();
-            _outline.SetRenderers(appearance.Renderers);
-            _animator.SetBool(IsGrounded, true);
-
-            for (var layer = 1; layer < _animator.layerCount; layer++)
-                _animator.SetLayerWeight(layer, 0f);
-
-            _handWeapon = Instantiate(_appearances.HandWeapon, appearance.RightHand, false);
-            _handWeapon.transform.SetLocalPositionAndRotation(_appearances.HandWeaponPosition, _appearances.HandWeaponRotation);
-            _handWeapon.SetActive(false);
         }
 
         private void RefreshPatience() =>
