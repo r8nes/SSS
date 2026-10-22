@@ -26,6 +26,15 @@ namespace ShooterShop.Economy
             return true;
         }
 
+        public void Charge(int amount)
+        {
+            if (amount <= 0)
+                return;
+
+            Balance -= amount;
+            BalanceChanged?.Invoke(Balance);
+        }
+
         public void Add(int amount)
         {
             if (amount <= 0)

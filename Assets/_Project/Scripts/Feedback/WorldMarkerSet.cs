@@ -16,6 +16,10 @@ namespace ShooterShop.Feedback
         [Required, SceneObjectsOnly]
         [SerializeField] private WorldMarker _delivery;
 
+        [Required, SceneObjectsOnly]
+        [SerializeField] private WorldMarker _storage;
+
+        public WorldMarker Storage => _storage;
         public WorldMarker Terminal => _terminal;
         public WorldMarker OpenSign => _openSign;
         public WorldMarker Delivery => _delivery;

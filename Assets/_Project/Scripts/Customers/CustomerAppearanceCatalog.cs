@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using ShooterShop.Rentals;
 using Sirenix.OdinInspector;
 using UnityEngine;
 
@@ -19,40 +20,31 @@ namespace ShooterShop.Customers
         [InfoBox("Speed at which the walk clip looks natural, faster movement blends towards run")]
         [SerializeField] private float _walkClipSpeed = 1.4f;
 
-        [BoxGroup("Aim pose"), ListDrawerSettings(ShowFoldout = false)]
-        [InfoBox("Humanoid muscle values applied over the animation while a range visitor shoots")]
-        [SerializeField] private List<MuscleValue> _aimPose = new()
-        {
-            new("Right Arm Down-Up", 0.25f),
-            new("Right Arm Front-Back", -0.85f),
-            new("Right Forearm Stretch", 0.95f),
-            new("Right Hand Down-Up", 0f),
-            new("Left Arm Down-Up", 0.22f),
-            new("Left Arm Front-Back", -0.85f),
-            new("Left Arm Twist In-Out", 0f),
-            new("Left Forearm Stretch", 0.5f)
-        };
+        [BoxGroup("Weapon stance")]
+        [SerializeField] private string _weaponLayer = "Weapon";
 
-        [BoxGroup("Aim pose"), Range(0f, 1f)]
-        [SerializeField] private float _recoilStrength = 0.18f;
+        [BoxGroup("Weapon stance")]
+        [SerializeField] private string _pistolIdleState = "Pistol";
 
-        [BoxGroup("Aim pose"), MinValue(1f)]
-        [SerializeField] private float _recoilRecovery = 12f;
+        [BoxGroup("Weapon stance")]
+        [InfoBox("Empty when the pistol idle clip already contains the shots")]
+        [SerializeField] private string _pistolFireState = "";
 
-        [BoxGroup("Hand weapon")]
-        [InfoBox("Offset of the held rental weapon display model from the right hand bone")]
-        [SerializeField] private Vector3 _handWeaponPosition = new(0.08f, 0.02f, 0.03f);
+        [BoxGroup("Weapon stance")]
+        [SerializeField] private string _rifleIdleState = "Rifle";
 
-        [BoxGroup("Hand weapon")]
-        [SerializeField] private Vector3 _handWeaponRotation = new(0f, 90f, 90f);
+        [BoxGroup("Weapon stance")]
+        [SerializeField] private string _rifleFireState = "Rifle Fire";
 
         public Vector3 ModelOffset => _modelOffset;
         public float WalkClipSpeed => _walkClipSpeed;
-        public IReadOnlyList<MuscleValue> AimPose => _aimPose;
-        public float RecoilStrength => _recoilStrength;
-        public float RecoilRecovery => _recoilRecovery;
-        public Vector3 HandWeaponPosition => _handWeaponPosition;
-        public Quaternion HandWeaponRotation => Quaternion.Euler(_handWeaponRotation);
+        public string WeaponLayer => _weaponLayer;
+
+        public string IdleStateOf(RentalWeaponPose pose) => pose == RentalWeaponPose.Rifle ? _rifleIdleState : _pistolIdleState;
+
+        public string FireStateOf(RentalWeaponPose pose) => pose == RentalWeaponPose.Rifle ? _rifleFireState : _pistolFireState;
+
+        public int IndexOf(CustomerAppearance appearance) => _appearances.IndexOf(appearance);
 
         public int PickIndex() => _appearances.Count > 0 ? Random.Range(0, _appearances.Count) : -1;
 

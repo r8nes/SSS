@@ -1,0 +1,53 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3eda8c867fee7a545ad49da48e40241f, type: 3}
+  m_Name: IntroConfig
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Intro.IntroConfig
+  _bossAppearance: {fileID: 3502758686029536842, guid: f5ac06fb4723dbe4094e107ef4ff1343, type: 3}
+  _bossName: Mr. Russo, the owner
+  _interactionName: Talk to the boss
+  _walkSpeed: 1.4
+  _walkBlendValue: 5
+  _animationSmoothing: 10
+  _visits:
+  - _day: 1
+    _startsAmbush: 0
+    _lines:
+    - _text: Ah, there you are. Welcome to your new job - this shop is yours to run
+        now.
+    - _text: Buy stock on the terminal behind the counter, fill the shelves and open
+        the doors with the OPEN sign.
+    - _text: One more thing. The Italian mafia has moved into town. They don't ask,
+        they take.
+    - _text: Keep your eyes open and a gun close. If they come, defend the stock
+        - every crate they carry out comes out of your pocket.
+    - _text: I'm going to turn the power on and open up. Good luck, kid. You'll need
+        it.
+  - _day: 4
+    _startsAmbush: 1
+    _lines:
+    - _text: Kid, we have a problem. Somebody has been stealing our weapon shipments.
+    - _text: It's the same Italian gang. They're holed up right across the street,
+        loading our crates as we speak.
+    - _text: Seven, maybe eight of them, and they're armed. They will shoot the moment
+        they see you.
+    - _text: Take them all out. Every last one. Then you can open the shop - and
+        I'll make it worth your while.
+  _nextLabel: Next
+  _finishLabel: Got it
+  _talkFirstMessage: Talk to the boss before opening the shop
+  _ambushFirstMessage: Deal with the bandits across the street first
+  _flickers: {x: 3, y: 6}
+  _flickerStep: {x: 0.05, y: 0.25}
+  _lightsDelay: 0.5
+  _doorOpenDuration: 1.2
+  _doorDelay: 0.4

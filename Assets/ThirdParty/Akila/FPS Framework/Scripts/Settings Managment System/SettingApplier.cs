@@ -43,7 +43,7 @@ namespace Akila.FPSFramework
             dropdown = this.SearchFor<TMP_Dropdown>();
             toggle = this.SearchFor<Toggle>();
 
-            if (settingsManager.autoApply)
+            if (settingsManager.autoApply || IsLiveOption())
             {
                 if (slider != null)
                 {
@@ -67,6 +67,13 @@ namespace Akila.FPSFramework
             }
 
             Load();
+        }
+
+        private bool IsLiveOption()
+        {
+            string fileName = null;
+            SettingOption option = GetOption(ref fileName);
+            return option != null && option.functionName.Contains("Volume");
         }
 
         public void Save()

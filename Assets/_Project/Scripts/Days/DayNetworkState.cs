@@ -1,5 +1,6 @@
 using System;
 using Mirror;
+using ShooterShop.Network;
 using VContainer;
 
 namespace ShooterShop.Days
@@ -20,10 +21,13 @@ namespace ShooterShop.Days
         public event Action Changed;
         public event Action NextDayRequested;
         public event Action OpenShopRequested;
+        public event Action CloseShopRequested;
 
         public int Day => _day;
         public DayPhase Phase => _phase;
         public bool IsOpen => _phase == DayPhase.Open;
+        public bool IsAcceptingCustomers => IsOpen && TimeLeft > 0;
+        public bool CanCloseShop => IsOpen && TimeLeft <= 0;
         public double TimeLeft => _phase == DayPhase.Open ? Math.Max(0, _closesAt - NetworkTime.time) : 0;
         public int Income => _income;
         public int Expenses => _expenses;
@@ -31,7 +35,7 @@ namespace ShooterShop.Days
         public int Sales => _sales;
         public int LaneRentals => _laneRentals;
         public DayEventConfig CurrentEvent => _events != null && _events.TryGet(_eventIndex, out var dayEvent) ? dayEvent : null;
-        public bool CanStartNextDay => isServer && _phase == DayPhase.Summary;
+        public bool CanStartNextDay => _phase == DayPhase.Summary && this.IsSpawnedOnServer();
         public bool CanOpenShop => _phase == DayPhase.Preparing && _day > 0;
 
         [Inject]
@@ -93,6 +97,24 @@ namespace ShooterShop.Days
                 OpenShopRequested?.Invoke();
             else
                 CmdOpenShop();
+        }
+
+        public void CloseShop()
+        {
+            if (!CanCloseShop)
+                return;
+
+            if (isServer)
+                CloseShopRequested?.Invoke();
+            else
+                CmdCloseShop();
+        }
+
+        [Command(requiresAuthority = false)]
+        private void CmdCloseShop()
+        {
+            if (CanCloseShop)
+                CloseShopRequested?.Invoke();
         }
 
         [Command(requiresAuthority = false)]

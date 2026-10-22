@@ -4,6 +4,7 @@ namespace ShooterShop.Feedback
     {
         Info,
         Good,
-        Warning
+        Warning,
+        Danger
     }
 }

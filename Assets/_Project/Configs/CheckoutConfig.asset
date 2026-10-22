@@ -1,0 +1,44 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d4acc088b82a31543a6d304d044acf76, type: 3}
+  m_Name: CheckoutConfig
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Checkout.CheckoutConfig
+  _denominations:
+  - _value: 100
+    _prefab: {fileID: 5307051045540304516, guid: 367b4abf9f9eeb7438d15c683342e4ae, type: 3}
+    _stackStep: 0.035
+  - _value: 50
+    _prefab: {fileID: 8811332431683021348, guid: 384b946a6c5520347a3c8a78dd1651d8, type: 3}
+    _stackStep: 0.035
+  - _value: 10
+    _prefab: {fileID: 5272344647999775942, guid: e366d6d6999027b4296a4c3245bc756f, type: 3}
+    _stackStep: 0.035
+  - _value: 5
+    _prefab: {fileID: 6710490626850463924, guid: e82a35dd495f93d498acb21dc928607c, type: 3}
+    _stackStep: 0.035
+  - _value: 1
+    _prefab: {fileID: 8190560021712106672, guid: 85349a517a61277429377f916141d5e5, type: 3}
+    _stackStep: 0.035
+  _maxBillsPerStack: 5
+  _stackSpacing: {x: 0.24, y: 0, z: 0}
+  _billYawJitter: 8
+  _maxGoodsShown: 6
+  _goodsSpacing: {x: 0.22, y: 0, z: 0}
+  _goodsStagger: 0.12
+  _moneyDelay: 0.35
+  _billStagger: 0.05
+  _collectDuration: 0.35
+  _collectStagger: 0.02
+  _collectOffset: {x: 0, y: -0.25, z: 0.35}
+  _goodsTakeDuration: 0.4
+  _takePrompt: Take ${0:N0}
+  _outOfStockMessage: Not enough {0} in stock

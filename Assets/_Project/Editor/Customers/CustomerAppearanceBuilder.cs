@@ -12,10 +12,11 @@ namespace ShooterShop.Editor.Customers
     {
         private const string CitizensPrefabs = "Assets/Citizens PRO/People Prefabs";
         private const string CitizensAnimations = "Assets/Citizens PRO/Animations";
-        private const string AkilaCharacter = "Assets/ThirdParty/Akila/FPS Framework Pro/Art/Models/Multiplayer/CharacterAnimated.fbx";
         private const string AkilaPlayer = "Assets/ThirdParty/Akila/FPS Framework Pro/Prefabs/Characters/Player Network.prefab";
         private const string AnimationsFolder = "Assets/_Project/Art/Animations/Customers";
-        private const string AkilaHumanoidCopy = AnimationsFolder + "/AkilaCharacterHumanoid.fbx";
+        private const string PistolIdlePath = AnimationsFolder + "/Pistol Idle.fbx";
+        private const string RifleIdlePath = AnimationsFolder + "/Rifle Aiming Idle.fbx";
+        private const string RifleFirePath = AnimationsFolder + "/Firing Rifle.fbx";
         private const string ControllerPath = AnimationsFolder + "/CustomerHumanoid.controller";
         private const string UpperBodyMaskPath = AnimationsFolder + "/CustomerUpperBody.mask";
         private const string AppearancesFolder = "Assets/_Project/Prefabs/Customers/Appearances";
@@ -36,16 +37,6 @@ namespace ShooterShop.Editor.Customers
             ("Girl no Heel controller", "Girl no Heel", "_f")
         };
 
-        private static readonly Dictionary<string, string> AkilaHumanBones = new()
-        {
-            { "Hips", "root.x" }, { "Spine", "spine_01.x" }, { "Chest", "spine_02.x" }, { "UpperChest", "spine_03.x" },
-            { "Neck", "neck.x" }, { "Head", "head.x" },
-            { "LeftShoulder", "shoulder.l" }, { "LeftUpperArm", "arm_stretch.l" }, { "LeftLowerArm", "forearm_stretch.l" }, { "LeftHand", "hand.l" },
-            { "RightShoulder", "shoulder.r" }, { "RightUpperArm", "arm_stretch.r" }, { "RightLowerArm", "forearm_stretch.r" }, { "RightHand", "hand.r" },
-            { "LeftUpperLeg", "thigh_stretch.l" }, { "LeftLowerLeg", "leg_stretch.l" }, { "LeftFoot", "foot.l" }, { "LeftToes", "toes_01.l" },
-            { "RightUpperLeg", "thigh_stretch.r" }, { "RightLowerLeg", "leg_stretch.r" }, { "RightFoot", "foot.r" }, { "RightToes", "toes_01.r" }
-        };
-
         [MenuItem("Shooter Shop/Customers/Build Appearances")]
         public static void Build()
         {
@@ -55,9 +46,11 @@ namespace ShooterShop.Editor.Customers
             var sources = FindSourcePrefabs();
             ConvertModels(sources);
             var gaitClips = Gaits.ToDictionary(gait => gait.Controller, gait => ConvertGait(gait.Folder, gait.Suffix));
-            var (aim, fire) = BuildAkilaPistolClips();
+            var pistolIdle = ConvertStance(PistolIdlePath, true);
+            var rifleIdle = ConvertStance(RifleIdlePath, true);
+            var rifleFire = ConvertStance(RifleFirePath, false);
             var mask = BuildUpperBodyMask();
-            var controller = BuildController(gaitClips[Gaits[0].Controller], aim, fire, mask);
+            var controller = BuildController(gaitClips[Gaits[0].Controller], pistolIdle, rifleIdle, rifleFire, mask);
             var overrides = Gaits.Skip(1).ToDictionary(gait => gait.Controller, gait => BuildOverride(controller, gait.Folder, gaitClips[Gaits[0].Controller], gaitClips[gait.Controller]));
 
             var appearances = new List<CustomerAppearance>();
@@ -142,97 +135,26 @@ namespace ShooterShop.Editor.Customers
             clip.keepOriginalPositionXZ = true;
         }
 
-        private static (AnimationClip Aim, AnimationClip Fire) BuildAkilaPistolClips()
+        private static AnimationClip ConvertStance(string path, bool loop)
         {
-            if (AssetImporter.GetAtPath(AkilaHumanoidCopy) == null)
-                AssetDatabase.CopyAsset(AkilaCharacter, AkilaHumanoidCopy);
-
-            var importer = (ModelImporter)AssetImporter.GetAtPath(AkilaHumanoidCopy);
-            var model = AssetDatabase.LoadAssetAtPath<GameObject>(AkilaHumanoidCopy);
-
-            var description = importer.humanDescription;
-            description.human = AkilaHumanBones
-                .Select(pair => new HumanBone { humanName = pair.Key, boneName = pair.Value, limit = new HumanLimit { useDefaultValues = true } })
-                .ToArray();
-            description.skeleton = BuildTPoseSkeleton(model);
+            if (AssetImporter.GetAtPath(path) is not ModelImporter importer)
+                return null;
 
             importer.animationType = ModelImporterAnimationType.Human;
             importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel;
-            importer.humanDescription = description;
 
             var clips = importer.defaultClipAnimations;
 
             foreach (var clip in clips)
             {
-                clip.loopTime = clip.name.Contains("idle");
-                clip.lockRootRotation = true;
-                clip.lockRootHeightY = true;
-                clip.lockRootPositionXZ = true;
-                clip.keepOriginalOrientation = true;
-                clip.keepOriginalPositionY = true;
-                clip.keepOriginalPositionXZ = true;
+                clip.name = System.IO.Path.GetFileNameWithoutExtension(path);
+                MakeLoopingInPlace(clip);
+                clip.loopTime = loop;
             }
 
             importer.clipAnimations = clips;
             importer.SaveAndReimport();
-
-            var all = AssetDatabase.LoadAllAssetsAtPath(AkilaHumanoidCopy).OfType<AnimationClip>().Where(clip => !clip.name.StartsWith("__preview")).ToList();
-            var avatar = AssetDatabase.LoadAllAssetsAtPath(AkilaHumanoidCopy).OfType<Avatar>().FirstOrDefault();
-
-            if (avatar == null || !avatar.isHuman)
-                Debug.LogError("[CustomerAppearanceBuilder] Akila character did not become humanoid, check the bone map");
-
-            return (all.FirstOrDefault(clip => clip.name.EndsWith("item_pistol1_idle")), all.FirstOrDefault(clip => clip.name.EndsWith("item_pistol1_fire")));
-        }
-
-        private static SkeletonBone[] BuildTPoseSkeleton(GameObject model)
-        {
-            var instance = Object.Instantiate(model);
-
-            try
-            {
-                instance.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-                var bones = instance.GetComponentsInChildren<Transform>(true).GroupBy(bone => bone.name).ToDictionary(group => group.Key, group => group.First());
-
-                void Align(string bone, string child, Vector3 direction)
-                {
-                    if (!bones.TryGetValue(bone, out var from) || !bones.TryGetValue(child, out var to))
-                        return;
-
-                    var current = to.position - from.position;
-
-                    if (current.sqrMagnitude > 1e-8f)
-                        from.rotation = Quaternion.FromToRotation(current.normalized, direction) * from.rotation;
-                }
-
-                Align("spine_01.x", "spine_02.x", Vector3.up);
-                Align("spine_02.x", "spine_03.x", Vector3.up);
-                Align("spine_03.x", "neck.x", Vector3.up);
-                Align("neck.x", "head.x", Vector3.up);
-
-                foreach (var (side, outward) in new[] { ("l", Vector3.left), ("r", Vector3.right) })
-                {
-                    Align($"thigh_stretch.{side}", $"leg_stretch.{side}", Vector3.down);
-                    Align($"leg_stretch.{side}", $"foot.{side}", Vector3.down);
-                    Align($"shoulder.{side}", $"arm_stretch.{side}", outward);
-                    Align($"arm_stretch.{side}", $"forearm_stretch.{side}", outward);
-                    Align($"forearm_stretch.{side}", $"hand.{side}", outward);
-                }
-
-                return instance.GetComponentsInChildren<Transform>(true)
-                    .Select(bone => new SkeletonBone
-                    {
-                        name = bone == instance.transform ? model.name : bone.name,
-                        position = bone.localPosition,
-                        rotation = bone.localRotation,
-                        scale = bone.localScale
-                    })
-                    .ToArray();
-            }
-            finally
-            {
-                Object.DestroyImmediate(instance);
-            }
+            return AssetDatabase.LoadAllAssetsAtPath(path).OfType<AnimationClip>().FirstOrDefault(clip => !clip.name.StartsWith("__preview"));
         }
 
         private static AvatarMask BuildUpperBodyMask()
@@ -240,7 +162,7 @@ namespace ShooterShop.Editor.Customers
             var mask = LoadOrCreate<AvatarMask>(UpperBodyMaskPath);
 
             for (var part = AvatarMaskBodyPart.Root; part < AvatarMaskBodyPart.LastBodyPart; part++)
-                mask.SetHumanoidBodyPartActive(part, part is AvatarMaskBodyPart.Head
+                mask.SetHumanoidBodyPartActive(part, part is AvatarMaskBodyPart.Body or AvatarMaskBodyPart.Head
                     or AvatarMaskBodyPart.LeftArm or AvatarMaskBodyPart.RightArm
                     or AvatarMaskBodyPart.LeftFingers or AvatarMaskBodyPart.RightFingers);
 
@@ -248,7 +170,7 @@ namespace ShooterShop.Editor.Customers
             return mask;
         }
 
-        private static AnimatorController BuildController((AnimationClip Idle, AnimationClip Walk, AnimationClip Run) gait, AnimationClip aim, AnimationClip fire, AvatarMask mask)
+        private static AnimatorController BuildController((AnimationClip Idle, AnimationClip Walk, AnimationClip Run) gait, AnimationClip pistolIdle, AnimationClip rifleIdle, AnimationClip rifleFire, AvatarMask mask)
         {
             if (AssetDatabase.LoadAssetAtPath<AnimatorController>(ControllerPath) != null)
                 AssetDatabase.DeleteAsset(ControllerPath);
@@ -281,26 +203,29 @@ namespace ShooterShop.Editor.Customers
 
             controller.AddLayer(new AnimatorControllerLayer
             {
-                name = "Pistol",
+                name = "Weapon",
                 defaultWeight = 0f,
                 avatarMask = mask,
                 blendingMode = AnimatorLayerBlendingMode.Override,
-                stateMachine = new AnimatorStateMachine { name = "Pistol", hideFlags = HideFlags.HideInHierarchy }
+                stateMachine = new AnimatorStateMachine { name = "Weapon", hideFlags = HideFlags.HideInHierarchy }
             });
 
-            var pistolMachine = controller.layers[1].stateMachine;
-            AssetDatabase.AddObjectToAsset(pistolMachine, controller);
+            var weaponMachine = controller.layers[1].stateMachine;
+            AssetDatabase.AddObjectToAsset(weaponMachine, controller);
 
-            var aimState = pistolMachine.AddState("Aim");
-            aimState.motion = aim;
-            pistolMachine.defaultState = aimState;
+            var pistolState = weaponMachine.AddState("Pistol");
+            pistolState.motion = pistolIdle;
+            weaponMachine.defaultState = pistolState;
 
-            var fireState = pistolMachine.AddState("Fire");
-            fireState.motion = fire;
-            var back = fireState.AddTransition(aimState);
+            var rifleState = weaponMachine.AddState("Rifle");
+            rifleState.motion = rifleIdle;
+
+            var fireState = weaponMachine.AddState("Rifle Fire");
+            fireState.motion = rifleFire;
+            var back = fireState.AddTransition(rifleState);
             back.hasExitTime = true;
-            back.exitTime = 0.9f;
-            back.duration = 0.1f;
+            back.exitTime = 0.95f;
+            back.duration = 0.15f;
 
             EditorUtility.SetDirty(controller);
             return controller;

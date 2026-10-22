@@ -20,6 +20,7 @@ namespace ShooterShop.Feedback
         private ScreenLabel _terminal;
         private ScreenLabel _openSign;
         private ScreenLabel _delivery;
+        private ScreenLabel _storage;
 
         public WorldMarkerPresenter(
             WorldMarkerSet markers,
@@ -46,6 +47,7 @@ namespace ShooterShop.Feedback
             _terminal = Create(_markers.Terminal);
             _openSign = Create(_markers.OpenSign);
             _delivery = Create(_markers.Delivery);
+            _storage = Create(_markers.Storage);
         }
 
         public void Dispose()
@@ -53,6 +55,7 @@ namespace ShooterShop.Feedback
             _labels.Release(_terminal);
             _labels.Release(_openSign);
             _labels.Release(_delivery);
+            _labels.Release(_storage);
         }
 
         public void Tick()
@@ -67,8 +70,9 @@ namespace ShooterShop.Feedback
             var bob = Vector3.up * (Mathf.Sin(Time.time * _config.MarkerBobSpeed) * _config.MarkerBobHeight);
 
             Show(_terminal, _markers.Terminal, isPreparing, camera, bob);
-            Show(_openSign, _markers.OpenSign, isPreparing && _dayCommands.CanOpenShop, camera, bob);
+            Show(_openSign, _markers.OpenSign, (isPreparing && _dayCommands.CanOpenShop) || (_day.IsOpen && !_day.IsAcceptingCustomers), camera, bob);
             Show(_delivery, _markers.Delivery, hasDelivery, camera, bob);
+            Show(_storage, _markers.Storage, _carry.IsLocalPlayerCarrying, camera, bob);
         }
 
         private ScreenLabel Create(WorldMarker marker)

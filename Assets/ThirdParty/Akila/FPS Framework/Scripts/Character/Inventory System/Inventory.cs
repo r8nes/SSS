@@ -137,8 +137,12 @@ namespace Akila.FPSFramework
                 lastItemIndex = previousItemIndex;
             }
 
-            if(currentItemIndex == -1)
+            if (currentItemIndex >= items.Count)
+                currentItemIndex = items.Count - 1;
+
+            if(currentItemIndex < 0)
             {
+                currentItemIndex = -1;
                 activeItem = currentDefaultItem;
             }
             else

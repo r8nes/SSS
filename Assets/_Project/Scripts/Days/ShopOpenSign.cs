@@ -10,6 +10,8 @@ namespace ShooterShop.Days
     {
         [SerializeField] private string _interactionName = "Open shop";
 
+        [SerializeField] private string _closeInteractionName = "Close shop";
+
         [Required]
         [SerializeField] private InteractableOutline _outline;
 
@@ -24,7 +26,7 @@ namespace ShooterShop.Days
             set
             {
                 _isHighlighted = value;
-                _outline.SetVisible(value && _commands != null && _commands.CanOpenShop);
+                _outline.SetVisible(value && _commands != null && (_commands.CanOpenShop || _commands.CanCloseShop));
             }
         }
 
@@ -35,9 +37,26 @@ namespace ShooterShop.Days
             _commands = commands;
         }
 
-        public string GetInteractionName() =>
-            _commands != null && _commands.CanOpenShop ? $"{_interactionName} (Day {_state.Day})" : string.Empty;
+        public string GetInteractionName()
+        {
+            if (_commands == null)
+                return string.Empty;
 
-        public void Interact(InteractionsManager source) => _commands?.OpenShop();
+            if (_commands.CanOpenShop)
+                return $"{_interactionName} (Day {_state.Day})";
+
+            return _commands.CanCloseShop ? _closeInteractionName : string.Empty;
+        }
+
+        public void Interact(InteractionsManager source)
+        {
+            if (_commands == null)
+                return;
+
+            if (_commands.CanOpenShop)
+                _commands.OpenShop();
+            else
+                _commands.CloseShop();
+        }
     }
 }

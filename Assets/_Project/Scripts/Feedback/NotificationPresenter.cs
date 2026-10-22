@@ -23,7 +23,7 @@ namespace ShooterShop.Feedback
         private void OnNotified(string message, NotificationKind kind)
         {
             if (_view != null)
-                _view.Show(message, _config.ColorOf(kind), _config.NotificationDuration, _config.NotificationFade, _config.MaxNotifications);
+                _view.Show(message, _config.ColorOf(kind), _config.DurationOf(kind), _config.NotificationFade, _config.MaxNotifications, kind == NotificationKind.Danger);
         }
     }
 }

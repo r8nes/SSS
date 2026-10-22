@@ -10,7 +10,7 @@ namespace ShooterShop.Range
         [SerializeField] private int _laneFee = 60;
 
         [BoxGroup("Rental"), MinValue(10), SuffixLabel("sec")]
-        [SerializeField] private float _sessionDuration = 60;
+        [SerializeField] private float _sessionDuration = 30;
 
         [BoxGroup("Visitors"), PropertyRange(0, 1)]
         [InfoBox("Chance that a new customer comes to shoot instead of shopping, when a lane is free")]

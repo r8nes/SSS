@@ -1,3 +1,4 @@
+using ShooterShop.Audio;
 using ShooterShop.Menu;
 using Sirenix.OdinInspector;
 using UnityEngine;
@@ -29,6 +30,7 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_screenFade);
             builder.RegisterInstance(_cameraTourConfig);
             builder.RegisterEntryPoint<MenuCameraTourPlayer>();
+            builder.RegisterEntryPoint<MusicCue>().WithParameter(MusicPlaylist.Menu);
         }
     }
 }

@@ -1,6 +1,7 @@
 ﻿using Akila.FPSFramework.Internal;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using TMPro;
 using UnityEngine;
@@ -97,7 +98,12 @@ namespace Akila.FPSFramework
         private void Start()
         { 
             cachedBindingDisplayString =
-                CharacterInput.controls.Player.Interact.GetBindingDisplayString(InputBinding.MaskByGroup("Keyboard&Mouse"));
+                CharacterInput.controls.Player.Interact.GetBindingDisplayString(InputBinding.MaskByGroup("Keyboard&Mouse"), InputBinding.DisplayStringOptions.DontUseShortDisplayNames | InputBinding.DisplayStringOptions.IgnoreBindingOverrides);
+
+            var interactBinding = CharacterInput.controls.Player.Interact.bindings.FirstOrDefault(binding => binding.groups != null && binding.groups.Contains("Keyboard&Mouse"));
+
+            if (!string.IsNullOrEmpty(interactBinding.effectivePath))
+                cachedBindingDisplayString = InputControlPath.ToHumanReadableString(interactBinding.effectivePath, InputControlPath.HumanReadableStringOptions.OmitDevice);
         }
 
         private void OnEnable()

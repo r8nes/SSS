@@ -14,4 +14,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Rentals.RentalWeaponConfig
   _displayName: Rental shotgun
   _item: {fileID: 9074870736428100194, guid: 0054a714c9c4b104180f3e46370ad9ba, type: 3}
+  _pose: 1
   _displayModel: {fileID: 9078862036413657490, guid: c11fde149acdf184e8e11c1592f1a1e1, type: 3}
+  _handOffset: {x: 0, y: 0.04, z: 0.35}
+  _handRotation: {x: 0, y: 0, z: 0}
+  _muzzleDistance: 0.8
+  _fireSound: {fileID: 11400000, guid: 31e52a32b0f9831408c3126de7814af7, type: 2}

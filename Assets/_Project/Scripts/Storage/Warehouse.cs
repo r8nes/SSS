@@ -29,7 +29,10 @@ namespace ShooterShop.Storage
             _stock.TryGetValue(product, out var amount) ? amount : 0;
 
         public bool CanStore(ProductConfig product, int amount) =>
-            product != null && amount > 0 && product.StorageSize * amount <= FreeSpace;
+            product != null && amount > 0 && ExtraBoxes(product, amount) <= FreeSpace;
+
+        public int ExtraBoxes(ProductConfig product, int amount) =>
+            product.BoxesFor(GetAmount(product) + amount) - product.BoxesFor(GetAmount(product));
 
         public bool TryAdd(ProductConfig product, int amount)
         {
@@ -60,7 +63,7 @@ namespace ShooterShop.Storage
 
         private void SetAmount(ProductConfig product, int amount)
         {
-            UsedSpace += (amount - GetAmount(product)) * product.StorageSize;
+            UsedSpace += product.BoxesFor(amount) - product.BoxesFor(GetAmount(product));
 
             if (amount == 0)
                 _stock.Remove(product);

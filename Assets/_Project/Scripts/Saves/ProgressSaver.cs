@@ -9,7 +9,7 @@ using VContainer.Unity;
 
 namespace ShooterShop.Saves
 {
-    public sealed class ProgressSaver : IStartable, IDisposable
+    public sealed class ProgressSaver : IStartable, IDisposable, ISaveEvents
     {
         private readonly IDayState _day;
         private readonly IWallet _wallet;
@@ -17,6 +17,8 @@ namespace ShooterShop.Saves
         private readonly IUnlocks _unlocks;
         private readonly ISaveStorage _storage;
         private int _savedDay;
+
+        public event Action Saved;
 
         public ProgressSaver(IDayState day, IWallet wallet, IWarehouse warehouse, IUnlocks unlocks, ISaveStorage storage)
         {
@@ -44,6 +46,7 @@ namespace ShooterShop.Saves
                 Stock = _warehouse.Stock.Select(s => new StockSave { Product = s.Key.name, Amount = s.Value }).ToList(),
                 Upgrades = _unlocks.Owned.Select(u => u.name).ToList()
             });
+            Saved?.Invoke();
         }
     }
 }

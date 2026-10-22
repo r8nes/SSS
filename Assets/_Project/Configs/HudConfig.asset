@@ -1,0 +1,25 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6ab260c066fe7844f9a3198f45aa60d1, type: 3}
+  m_Name: HudConfig
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Hud.HudConfig
+  _defaultHint: "[F] Interact    [Esc] Menu"
+  _carryHint: '[F] Put on a stand    [{0}] Drop    [{1}] Throw'
+  _weaponHint: '[LMB] Shoot    [RMB] Aim    [R] Reload    Put the weapon away to
+    carry boxes'
+  _hintFade: 0.2
+  _savingText: Saving...
+  _savedText: Game saved
+  _savingDuration: 0.8
+  _savedDuration: 1.5
+  _saveFade: 0.25
+  _iconSpinSpeed: -360

@@ -1,4 +1,3 @@
-using System;
 using VContainer.Unity;
 
 namespace ShooterShop.Days
@@ -7,9 +6,11 @@ namespace ShooterShop.Days
     {
         private readonly DayHudView _view;
         private readonly IDayState _state;
+        private readonly DayConfig _config;
 
-        public DayHudPresenter(DayHudView view, IDayState state)
+        public DayHudPresenter(DayHudView view, IDayState state, DayConfig config)
         {
+            _config = config;
             _view = view;
             _state = state;
         }
@@ -26,16 +27,11 @@ namespace ShooterShop.Days
         private string Format() => _state.Phase switch
         {
             DayPhase.Preparing when _state.Day > 0 => $"Day {_state.Day}  Preparing",
-            DayPhase.Open => $"Day {_state.Day}  {FormatTime(_state.TimeLeft)}",
+            DayPhase.Open when _state.IsAcceptingCustomers => $"Day {_state.Day}  {_config.ClockAt(_state.TimeLeft)}",
+            DayPhase.Open => $"Day {_state.Day}  {_config.ClockAt(0)}  <size=70%>Flip the sign to close</size>",
             DayPhase.Closing => $"Day {_state.Day}  Closing...",
             DayPhase.Summary => $"Day {_state.Day}  Closed",
             _ => string.Empty
         };
-
-        private static string FormatTime(double seconds)
-        {
-            var total = Math.Max(0, (int)Math.Ceiling(seconds));
-            return $"{total / 60}:{total % 60:00}";
-        }
     }
 }

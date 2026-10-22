@@ -173,8 +173,8 @@ namespace ShooterShop.Purchasing
                 _view.SetMessage($"Requires {product.RequiredUpgrade.DisplayName}");
             else if (_state.Money < cost)
                 _view.SetMessage($"Not enough money: need {FormatMoney(cost)}");
-            else if (_state.FreeSpace < product.StorageSize * amount)
-                _view.SetMessage($"Not enough storage: need {product.StorageSize * amount} slots");
+            else if (_state.FreeSpace < BoxesNeeded(product, amount))
+                _view.SetMessage($"Not enough storage: need {BoxesNeeded(product, amount)} box slots");
             else
             {
                 _commands.Purchase(product, amount);
@@ -182,10 +182,13 @@ namespace ShooterShop.Purchasing
             }
         }
 
+        private int BoxesNeeded(ProductConfig product, int amount) =>
+            product.BoxesFor(_state.GetStock(product) + amount) - product.BoxesFor(_state.GetStock(product));
+
         private void RefreshStatus()
         {
             _view.SetBalance(FormatMoney(_state.Money));
-            _view.SetStorage($"Storage {_state.UsedSpace}/{_state.Capacity}");
+            _view.SetStorage($"Storage {_state.UsedSpace}/{_state.Capacity} boxes");
         }
 
         private void RefreshStock(ProductConfig product)

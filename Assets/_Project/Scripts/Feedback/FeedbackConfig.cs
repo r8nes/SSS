@@ -141,8 +141,19 @@ namespace ShooterShop.Feedback
         public float PopupRise => _popupRise;
         public float ThrowArcHeight => _throwArcHeight;
 
+        [BoxGroup("Notifications")]
+        [SerializeField] private Color _dangerColor = new(1f, 0.25f, 0.2f, 1f);
+
+        [BoxGroup("Notifications"), MinValue(1f)]
+        [InfoBox("Danger notifications stay this many times longer")]
+        [SerializeField] private float _dangerDurationMultiplier = 2.5f;
+
+        public float DurationOf(NotificationKind kind) =>
+            kind == NotificationKind.Danger ? _notificationDuration * _dangerDurationMultiplier : _notificationDuration;
+
         public Color ColorOf(NotificationKind kind) => kind switch
         {
+            NotificationKind.Danger => _dangerColor,
             NotificationKind.Good => _goodColor,
             NotificationKind.Warning => _warningColor,
             _ => _infoColor

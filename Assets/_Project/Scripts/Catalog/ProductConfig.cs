@@ -26,9 +26,6 @@ namespace ShooterShop.Catalog
         [InfoBox("Sell price is not higher than buy price", InfoMessageType.Warning, nameof(IsUnprofitable))]
         [SerializeField] private int _sellPrice;
 
-        [BoxGroup("Storage"), MinValue(1), SuffixLabel("slots")]
-        [SerializeField] private int _storageSize = 1;
-
         [BoxGroup("Unlock"), AssetsOnly]
         [InfoBox("Leave empty if the product is available from the start")]
         [SerializeField] private UpgradeConfig _requiredUpgrade;
@@ -49,7 +46,7 @@ namespace ShooterShop.Catalog
         public int PackSize => _packSize;
         public int BuyPrice => _buyPrice;
         public int SellPrice => _sellPrice;
-        public int StorageSize => _storageSize;
+        public int BoxesFor(int units) => units <= 0 ? 0 : (units + _unitsPerBox - 1) / _unitsPerBox;
         public GameObject DisplayPrefab => _displayPrefab;
         public GameObject ShelfModel => _shelfModel;
         public int UnitsPerBox => _unitsPerBox;

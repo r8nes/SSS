@@ -37,6 +37,7 @@ namespace ShooterShop.Customers
         private readonly IObjectResolver _resolver;
         private readonly IShopFeed _feed;
         private readonly RentalStations _rentals;
+        private readonly IFines _fines;
         private readonly List<Customer> _customers = new();
         private readonly Dictionary<Customer, ShootingLane> _lanes = new();
         private readonly Dictionary<Customer, ProductStand> _stands = new();
@@ -60,8 +61,10 @@ namespace ShooterShop.Customers
             IUnlocks unlocks,
             IShopFeed feed,
             RentalStations rentals,
-            IObjectResolver resolver)
+            IObjectResolver resolver,
+            IFines fines)
         {
+            _fines = fines;
             _config = config;
             _rangeConfig = rangeConfig;
             _layout = layout;
@@ -95,7 +98,7 @@ namespace ShooterShop.Customers
                 if (await UniTask.Delay(TimeSpan.FromSeconds(interval), cancellationToken: cancellation).SuppressCancellationThrow())
                     return;
 
-                if (_day.IsOpen && Time.time >= _panicUntil && _customers.Count < _config.MaxCustomers)
+                if (_day.IsAcceptingCustomers && Time.time >= _panicUntil && _customers.Count < _config.MaxCustomers)
                     Spawn();
             }
         }
@@ -129,14 +132,20 @@ namespace ShooterShop.Customers
             _customers.Remove(customer);
 
             customer.ServerDie(direction.normalized * _config.DeathImpulse, point, _config.CorpseSinkDelay, _config.CorpseSinkDuration, _config.CorpseSinkDepth);
+            _fines.ServerFineForKill(customer.transform.position);
             DespawnCorpseAsync(customer).Forget();
             Panic();
         }
 
         private void Panic()
         {
-            _panicUntil = Time.time + _config.PanicDuration;
             _feed.Notify("Shots fired! Customers are running away", NotificationKind.Warning);
+            Evacuate(_config.PanicDuration);
+        }
+
+        public void Evacuate(float duration)
+        {
+            _panicUntil = Mathf.Max(_panicUntil, Time.time + duration);
 
             foreach (var customer in _customers.ToList())
             {
@@ -263,6 +272,9 @@ namespace ShooterShop.Customers
                     break;
                 case CustomerState.ReturningWeapon when customer.ServerTickArrival():
                     TryHandBack(customer);
+                    break;
+                case CustomerState.Shooting:
+                    customer.ServerFaceAimPoint();
                     break;
                 case CustomerState.GoingToLane when customer.ServerTickArrival():
                     StartShooting(customer);
@@ -404,7 +416,7 @@ namespace ShooterShop.Customers
 
             var waited = Time.time - customer.WaitingSince;
             var share = Mathf.Clamp01(1f - waited / _config.TipWindow) * _config.MaxTipShare;
-            return Mathf.RoundToInt(request.GoodsPrice * share);
+            return share <= 0f ? 0 : Money.Round(request.GoodsPrice * share);
         }
 
         private void SendToLane(Customer customer, ShootingLane lane)
@@ -420,6 +432,7 @@ namespace ShooterShop.Customers
         private void StartShooting(Customer customer)
         {
             customer.ServerSetState(CustomerState.Shooting);
+            customer.ServerAimAt(_lanes[customer].Target.position);
             _range.StartSession(_lanes[customer], customer);
         }
 
@@ -518,7 +531,7 @@ namespace ShooterShop.Customers
                 _lanes[customer] = lane;
                 var product = PickProduct(ammo);
                 var boxes = Random.Range(1, _rangeConfig.MaxAmmoBoxes + 1);
-                var fee = Mathf.RoundToInt(_rangeConfig.LaneFee * (dayEvent?.LaneFeeMultiplier ?? 1f));
+                var fee = Money.Round(_rangeConfig.LaneFee * (dayEvent?.LaneFeeMultiplier ?? 1f));
                 return new CustomerRequest(product, boxes, fee);
             }
 

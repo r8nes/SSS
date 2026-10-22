@@ -36,6 +36,11 @@ namespace ShooterShop.Days
         [InfoBox("Above 1 means customers come more often")]
         [SerializeField] private float _spawnRateMultiplier = 1f;
 
+        [BoxGroup("Raid")]
+        [InfoBox("A gang bursts into the shop during this day, see RaidConfig")]
+        [SerializeField] private bool _hasRaid;
+
+        public bool HasRaid => _hasRaid;
         public string Title => _title;
         public string Description => _description;
         public float PurchaseDiscount => _purchaseDiscount;

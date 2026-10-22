@@ -1,4 +1,5 @@
 using Mirror;
+using ShooterShop.Audio;
 using Mirror.Discovery;
 using ShooterShop.Loading;
 using ShooterShop.Network;
@@ -21,6 +22,9 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Loading"), Required]
         [SerializeField] private string _loadingSceneName = "Loading";
 
+        [BoxGroup("Audio"), Required, InlineEditor]
+        [SerializeField] private MusicConfig _musicConfig;
+
         [BoxGroup("Saves"), Required]
         [SerializeField] private string _saveFileName = "save.json";
 
@@ -39,6 +43,9 @@ namespace ShooterShop.Bootstrap
 
             builder.Register<LanDiscovery>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.Register<NetworkSession>(Lifetime.Singleton).AsImplementedInterfaces();
+
+            builder.RegisterInstance(_musicConfig);
+            builder.Register<MusicPlayer>(Lifetime.Singleton).AsImplementedInterfaces();
         }
     }
 }

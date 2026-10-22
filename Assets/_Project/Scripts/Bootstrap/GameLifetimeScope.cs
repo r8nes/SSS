@@ -1,16 +1,20 @@
+using ShooterShop.Audio;
 using ShooterShop.Catalog;
+using ShooterShop.Checkout;
 using ShooterShop.Customers;
 using ShooterShop.Days;
 using ShooterShop.Economy;
 using ShooterShop.Feedback;
 using ShooterShop.Hud;
 using ShooterShop.Input;
+using ShooterShop.Intro;
 using ShooterShop.Loading;
+using ShooterShop.Menu;
 using ShooterShop.Network;
 using ShooterShop.Purchasing;
+using ShooterShop.Raids;
 using ShooterShop.Range;
 using ShooterShop.Rentals;
-using ShooterShop.Sales;
 using ShooterShop.Saves;
 using ShooterShop.Storage;
 using ShooterShop.Street;
@@ -50,6 +54,9 @@ namespace ShooterShop.Bootstrap
         [SerializeField] private RangeConfig _rangeConfig;
 
         [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private RaidConfig _raidConfig;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private DayConfig _dayConfig;
 
         [BoxGroup("Network"), Required, SceneObjectsOnly]
@@ -74,7 +81,10 @@ namespace ShooterShop.Bootstrap
         [SerializeField] private ShopLayout _shopLayout;
 
         [BoxGroup("Customers"), Required, SceneObjectsOnly]
-        [SerializeField] private SaleDialogView _saleDialogView;
+        [SerializeField] private CheckoutCounter _checkoutCounter;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private CheckoutConfig _checkoutConfig;
 
         [BoxGroup("Range"), Required, SceneObjectsOnly]
         [SerializeField] private RangeLayout _rangeLayout;
@@ -84,6 +94,9 @@ namespace ShooterShop.Bootstrap
 
         [BoxGroup("Configs"), Required, InlineEditor]
         [SerializeField] private FeedbackConfig _feedbackConfig;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private ShotEffectsConfig _shotEffectsConfig;
 
         [BoxGroup("Store"), Required, SceneObjectsOnly]
         [SerializeField] private StoreLayout _storeLayout;
@@ -118,15 +131,49 @@ namespace ShooterShop.Bootstrap
         [BoxGroup("Hud"), Required, SceneObjectsOnly]
         [SerializeField] private DaySummaryView _daySummaryView;
 
+        [BoxGroup("Hud"), Required, SceneObjectsOnly]
+        [SerializeField] private ScreenFadeView _screenFade;
+
+        [BoxGroup("Configs"), Required, InlineEditor]
+        [SerializeField] private HudConfig _hudConfig;
+
+        [BoxGroup("Hud"), Required, SceneObjectsOnly]
+        [SerializeField] private HintsView _hintsView;
+
+        [BoxGroup("Hud"), Required, SceneObjectsOnly]
+        [SerializeField] private SaveIndicatorView _saveIndicatorView;
+
+        [BoxGroup("Intro"), Required, InlineEditor]
+        [SerializeField] private IntroConfig _introConfig;
+
+        [BoxGroup("Intro"), Required, SceneObjectsOnly]
+        [SerializeField] private IntroNetworkState _introState;
+
+        [BoxGroup("Intro"), Required, SceneObjectsOnly]
+        [SerializeField] private IntroLayout _introLayout;
+
+        [BoxGroup("Intro"), Required, SceneObjectsOnly]
+        [SerializeField] private DialogView _dialogView;
+
+        [BoxGroup("Range"), Required, SceneObjectsOnly]
+        [SerializeField] private AmbushLayout _ambushLayout;
+
+        [BoxGroup("Network"), Required, SceneObjectsOnly]
+        [SerializeField] private AmbushNetworkState _ambushState;
+
+        [BoxGroup("Hud"), Required, SceneObjectsOnly]
+        [SerializeField] private AmbushHudView _ambushHud;
+
         protected override void Configure(IContainerBuilder builder)
         {
             builder.RegisterInstance(_economyConfig);
             builder.RegisterInstance(_productCatalog);
 
             builder.Register<StartingState>(Lifetime.Singleton);
-            builder.RegisterEntryPoint<ProgressSaver>();
+            builder.RegisterEntryPoint<ProgressSaver>().As<ISaveEvents>();
 
             builder.Register<Wallet>(Lifetime.Singleton).As<IWallet>();
+            builder.Register<Bank>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.Register<Warehouse>(Lifetime.Singleton).As<IWarehouse>();
             builder.RegisterComponent(_shopNetworkState).As<IShopState, IShopCommands, ISupplierPricing>();
             builder.RegisterInstance(_supplierPricing);
@@ -167,7 +214,7 @@ namespace ShooterShop.Bootstrap
             builder.RegisterInstance(_customerAppearances);
             builder.RegisterComponent(_shopLayout);
             builder.Register<CustomerDirector>(Lifetime.Singleton).AsImplementedInterfaces();
-            builder.RegisterInstance(new InjectedPrefabs(_customerConfig.Prefab.gameObject, _storeConfig.BoxPrefab.gameObject, _pedestrianConfig.Prefab.gameObject));
+            builder.RegisterInstance(new InjectedPrefabs(_customerConfig.Prefab.gameObject, _storeConfig.BoxPrefab.gameObject, _pedestrianConfig.Prefab.gameObject, _raidConfig.Prefab.gameObject));
 
             builder.RegisterInstance(_pedestrianConfig);
             builder.RegisterComponent(_streetLayout);
@@ -175,8 +222,18 @@ namespace ShooterShop.Bootstrap
             builder.Register<PedestrianDirector>(Lifetime.Singleton).AsImplementedInterfaces();
             builder.RegisterEntryPoint<InjectedPrefabRegistrar>();
 
+            builder.RegisterInstance(_raidConfig);
+            builder.Register<RaiderRegistry>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
+            builder.Register<RaidDirector>(Lifetime.Singleton).AsImplementedInterfaces();
+            builder.RegisterComponent(_ambushLayout);
+            builder.RegisterComponent(_ambushState).AsSelf().As<IAmbushState>();
+            builder.RegisterComponent(_ambushHud);
+            builder.RegisterEntryPoint<AmbushHudPresenter>();
+
             builder.RegisterInstance(_feedbackConfig);
             builder.Register<ItemAnimator>(Lifetime.Singleton);
+            builder.RegisterInstance(_shotEffectsConfig);
+            builder.Register<ShotEffects>(Lifetime.Singleton);
 
             builder.RegisterInstance(_storeConfig);
             builder.RegisterComponent(_storeLayout);
@@ -189,14 +246,27 @@ namespace ShooterShop.Bootstrap
                 foreach (var stand in _storeLayout.Stands)
                     container.Inject(stand);
 
+                foreach (var rack in _storeLayout.StorageRacks)
+                    container.Inject(rack);
+
                 container.Inject(_shopOpenSign);
+
+                if (_introLayout.Boss != null)
+                    container.Inject(_introLayout.Boss);
                 container.Inject(_rentalStations.Rack);
                 container.Inject(_rentalStations.Handout);
             });
             builder.Register<CustomerRegistry>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
 
-            builder.RegisterComponent(_saleDialogView);
-            builder.Register<SalePresenter>(Lifetime.Singleton).AsImplementedInterfaces();
+            builder.RegisterInstance(_checkoutConfig);
+            builder.RegisterComponent(_checkoutCounter);
+            builder.Register<CheckoutService>(Lifetime.Singleton).AsImplementedInterfaces();
+
+            builder.RegisterInstance(_hudConfig);
+            builder.RegisterComponent(_hintsView);
+            builder.RegisterEntryPoint<HintsPresenter>();
+            builder.RegisterComponent(_saveIndicatorView);
+            builder.RegisterEntryPoint<SaveIndicatorPresenter>();
 
             builder.RegisterComponent(_moneyHudView);
             builder.RegisterEntryPoint<MoneyHudPresenter>();
@@ -204,10 +274,20 @@ namespace ShooterShop.Bootstrap
             builder.RegisterComponent(_dayHudView);
             builder.RegisterEntryPoint<DayHudPresenter>();
             builder.RegisterComponent(_daySummaryView);
+            builder.RegisterComponent(_screenFade);
+            builder.Register<LocalPlayerSpawner>(Lifetime.Singleton).As<ILocalPlayerSpawner>();
             builder.RegisterEntryPoint<DaySummaryPresenter>();
+
+            builder.RegisterInstance(_introConfig);
+            builder.RegisterComponent(_introState).AsSelf().As<IIntroState>();
+            builder.RegisterComponent(_introLayout);
+            builder.RegisterComponent(_dialogView);
+            builder.Register<IntroDirector>(Lifetime.Singleton).AsImplementedInterfaces();
+            builder.Register<IntroPresenter>(Lifetime.Singleton).AsImplementedInterfaces();
 
             builder.RegisterEntryPoint<OfflineSessionStarter>();
             builder.RegisterEntryPoint<GameLoadingCloser>();
+            builder.RegisterEntryPoint<MusicCue>().WithParameter(MusicPlaylist.Gameplay);
         }
     }
 }

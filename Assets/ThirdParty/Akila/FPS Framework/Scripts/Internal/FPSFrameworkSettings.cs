@@ -195,6 +195,8 @@ namespace Akila.FPSFramework
             }
         }
 
+        public static float musicVolume { get; set; } = 1;
+
         public static float globalAudioVolume
         {
             get

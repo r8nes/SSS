@@ -1,9 +1,24 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using Sirenix.OdinInspector;
 using UnityEngine;
 
 namespace ShooterShop.Days
 {
+    [Serializable]
+    public sealed class ScheduledDayEvent
+    {
+        [MinValue(1)]
+        [SerializeField] private int _day = 2;
+
+        [Required, AssetsOnly]
+        [SerializeField] private DayEventConfig _event;
+
+        public int Day => _day;
+        public DayEventConfig Event => _event;
+    }
+
     [CreateAssetMenu(menuName = "Shooter Shop/Days/Day Event Catalog", fileName = "DayEventCatalog")]
     public sealed class DayEventCatalog : ScriptableObject
     {
@@ -18,6 +33,10 @@ namespace ShooterShop.Days
         [Required, AssetsOnly, ListDrawerSettings(ShowFoldout = false)]
         [SerializeField] private List<DayEventConfig> _events = new();
 
+        [ListDrawerSettings(ShowFoldout = false)]
+        [InfoBox("Events that always happen on a given day instead of a random one")]
+        [SerializeField] private List<ScheduledDayEvent> _scheduled = new();
+
         public int IndexOf(DayEventConfig dayEvent) => _events.IndexOf(dayEvent);
 
         public bool TryGet(int index, out DayEventConfig dayEvent)
@@ -26,7 +45,15 @@ namespace ShooterShop.Days
             return dayEvent != null;
         }
 
-        public int PickIndex(int day) =>
-            day >= _firstEventDay && _events.Count > 0 && Random.value < _eventChance ? Random.Range(0, _events.Count) : -1;
+        public int PickIndex(int day)
+        {
+            var scheduled = _scheduled.Find(s => s.Day == day);
+
+            if (scheduled != null && _events.Contains(scheduled.Event))
+                return _events.IndexOf(scheduled.Event);
+
+            var random = _events.Where(e => !_scheduled.Exists(s => s.Event == e)).ToList();
+            return day >= _firstEventDay && random.Count > 0 && UnityEngine.Random.value < _eventChance ? _events.IndexOf(random[UnityEngine.Random.Range(0, random.Count)]) : -1;
+        }
     }
 }

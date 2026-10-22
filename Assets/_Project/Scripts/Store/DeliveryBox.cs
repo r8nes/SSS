@@ -2,6 +2,7 @@ using Akila.FPSFramework;
 using Mirror;
 using ShooterShop.Catalog;
 using ShooterShop.Feedback;
+using ShooterShop.Rentals;
 using Sirenix.OdinInspector;
 using TMPro;
 using UnityEngine;
@@ -52,7 +53,11 @@ namespace ShooterShop.Store
         public uint CarrierNetId => _carrierNetId;
         public bool IsCarried => _carrierNetId != 0;
         public int Units => _units;
+        public Vector3 RestPosition => _restPosition;
         public ProductConfig Product => _catalog != null && _catalog.TryGet(_productIndex, out var product) ? product : null;
+
+        private IPlayerHands _hands;
+        private StoreLayout _store;
 
         public bool requireHoldToInteract => false;
         public bool isHighlighted
@@ -66,8 +71,10 @@ namespace ShooterShop.Store
         }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, CarryService carry, ItemAnimator animator)
+        public void Construct(ProductCatalog catalog, CarryService carry, ItemAnimator animator, IPlayerHands hands, StoreLayout store)
         {
+            _store = store;
+            _hands = hands;
             _catalog = catalog;
             _carry = carry;
             _animator = animator;
@@ -105,15 +112,37 @@ namespace ShooterShop.Store
         }
 
         public string GetInteractionName() =>
-            !IsCarried && Product != null ? $"Pick up {Product.DisplayName} x{_units}" : string.Empty;
+            IsCarried || Product == null ? string.Empty
+            : _hands.IsHoldingWeapon ? _carry.WeaponBlocksCarryPrompt
+            : $"Pick up {Product.DisplayName} x{_units}";
 
         public void Interact(InteractionsManager source)
         {
-            if (!IsCarried && !_carry.IsLocalPlayerCarrying)
+            if (!IsCarried && !_carry.IsLocalPlayerCarrying && !_hands.IsHoldingWeapon)
                 CmdPickUp();
         }
 
         public void RequestDrop() => CmdDrop();
+
+        public void RequestStore(StorageRack rack) => CmdStore(_store.IndexOf(rack));
+
+        [Command(requiresAuthority = false)]
+        private void CmdStore(int rackIndex, NetworkConnectionToClient sender = null)
+        {
+            if (sender?.identity == null || sender.identity.netId != _carrierNetId || rackIndex < 0 || rackIndex >= _store.StorageRacks.Count)
+                return;
+
+            var rack = _store.StorageRacks[rackIndex];
+            var slot = rack.IsUnlocked ? rack.FindFreeSlot() : null;
+
+            if (slot == null)
+                return;
+
+            _wasThrown = false;
+            _carrierNetId = 0;
+            _restRotation = slot.rotation;
+            _restPosition = slot.position;
+        }
 
         public void RequestThrow(Vector3 direction) => CmdThrow(direction);
 

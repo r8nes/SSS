@@ -9,5 +9,6 @@ namespace ShooterShop.Economy
         bool CanAfford(int amount);
         bool TrySpend(int amount);
         void Add(int amount);
+        void Charge(int amount);
     }
 }

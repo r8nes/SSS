@@ -4,6 +4,7 @@ using Mirror;
 using Cysharp.Threading.Tasks;
 using System.Collections.Generic;
 using ShooterShop.Catalog;
+using ShooterShop.Checkout;
 using ShooterShop.Feedback;
 using ShooterShop.Range;
 using ShooterShop.Rentals;
@@ -85,13 +86,19 @@ namespace ShooterShop.Customers
         private int _rentalWeapon = -1;
 
         [SyncVar]
+        private Vector3 _aimPoint;
+
+        [SyncVar]
+        private bool _isAiming;
+
+        [SyncVar]
         private double _patienceStartedAt;
 
         [SyncVar]
         private float _patienceDuration;
 
         private ProductCatalog _catalog;
-        private ICustomerInteraction _interaction;
+        private ICheckout _checkout;
         private ICustomerDamage _damage;
         private CustomerAppearanceCatalog _appearances;
         private Animator _animator;
@@ -99,6 +106,7 @@ namespace ShooterShop.Customers
         private GameObject _handWeapon;
         private int _handWeaponIndex = -1;
         private RentalWeaponCatalog _rentalWeapons;
+        private ShotEffects _shotEffects;
         private AppearanceBody _body;
         private int _hitsTaken;
         private CustomerRegistry _registry;
@@ -141,8 +149,9 @@ namespace ShooterShop.Customers
         }
 
         [Inject]
-        public void Construct(ProductCatalog catalog, ICustomerInteraction interaction, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback, ICustomerDamage damage, CustomerAppearanceCatalog appearances, RentalWeaponCatalog rentalWeapons)
+        public void Construct(ProductCatalog catalog, ICheckout checkout, CustomerRegistry registry, IScreenLabels screenLabels, IViewCamera viewCamera, FeedbackConfig feedback, ICustomerDamage damage, CustomerAppearanceCatalog appearances, RentalWeaponCatalog rentalWeapons, ShotEffects shotEffects)
         {
+            _shotEffects = shotEffects;
             _rentalWeapons = rentalWeapons;
             _appearances = appearances;
             _damage = damage;
@@ -150,7 +159,7 @@ namespace ShooterShop.Customers
             _viewCamera = viewCamera;
             _feedback = feedback;
             _catalog = catalog;
-            _interaction = interaction;
+            _checkout = checkout;
             _registry = registry;
         }
 
@@ -170,7 +179,6 @@ namespace ShooterShop.Customers
         public override void OnStopClient()
         {
             _registry.Remove(this);
-            _body?.Dispose();
             _screenLabels.Release(_screenLabel);
             _screenLabel = null;
         }
@@ -210,6 +218,9 @@ namespace ShooterShop.Customers
         public void ServerSetState(CustomerState state)
         {
             _state = state;
+
+            if (state != CustomerState.Shooting)
+                _isAiming = false;
 
             if (state == CustomerState.Waiting)
                 WaitingSince = Time.time;
@@ -261,6 +272,9 @@ namespace ShooterShop.Customers
         }
 
         [Command(requiresAuthority = false)]
+        private void CmdOffer() => _checkout.ServerOffer(this);
+
+        [Command(requiresAuthority = false)]
         private void CmdHit(Vector3 direction, Vector3 point) => _damage.ServerHit(this, direction, point);
 
         [ClientRpc]
@@ -280,6 +294,27 @@ namespace ShooterShop.Customers
 
             if (_ragdoll != null)
                 _ragdoll.Sink(depth, duration);
+        }
+
+        [Server]
+        public void ServerAimAt(Vector3 point)
+        {
+            _aimPoint = point;
+            _isAiming = true;
+            ServerFaceAimPoint();
+        }
+
+        [Server]
+        public void ServerFaceAimPoint()
+        {
+            if (!_isAiming)
+                return;
+
+            var look = _aimPoint - transform.position;
+            look.y = 0f;
+
+            if (look.sqrMagnitude > 0.01f)
+                transform.rotation = Quaternion.LookRotation(look);
         }
 
         [Server]
@@ -332,7 +367,12 @@ namespace ShooterShop.Customers
         public void Interact(InteractionsManager source)
         {
             if (CanBeServed)
-                _interaction.Open(this);
+            {
+                if (isServer)
+                    _checkout.ServerOffer(this);
+                else
+                    CmdOffer();
+            }
         }
 
         private void OnRequestSynced(int _, int __) => RefreshLabel();
@@ -350,12 +390,25 @@ namespace ShooterShop.Customers
         }
 
         [ClientRpc]
-        private void RpcFire() => _body?.Kick();
+        private void RpcFire()
+        {
+            if (_body == null || !_rentalWeapons.TryGet(_rentalWeapon, out var weapon))
+                return;
+
+            _body.PlayFire(weapon.Pose);
+
+            if (_handWeapon != null)
+            {
+                var muzzle = _handWeapon.transform.position + _handWeapon.transform.forward * weapon.MuzzleDistance;
+                var target = _isAiming ? _aimPoint : muzzle + _handWeapon.transform.forward * 10f;
+                _shotEffects.Play(muzzle, target, weapon.FireSound);
+            }
+        }
 
         public void ClientPostAnimation(float deltaTime)
         {
-            if (_body != null && _state == CustomerState.Shooting && _rentalWeapon >= 0)
-                _body.ApplyAimPose(deltaTime);
+            if (_body != null && _handWeapon != null && _rentalWeapons.TryGet(_handWeaponIndex, out var weapon))
+                _body.AlignWeapon(_handWeapon.transform, weapon, _isAiming && _state == CustomerState.Shooting ? _aimPoint : null);
         }
 
         private void RefreshWeapon()
@@ -365,6 +418,13 @@ namespace ShooterShop.Customers
                 return;
 
             RefreshHandWeapon(isHoldingRental ? _rentalWeapon : -1);
+
+            var isShooting = isHoldingRental && _state == CustomerState.Shooting;
+
+            if (_body != null && _rentalWeapons.TryGet(_rentalWeapon, out var weapon))
+                _body.PlayWeaponPose(weapon.Pose, isShooting);
+            else
+                _body?.PlayWeaponPose(RentalWeaponPose.Pistol, false);
         }
 
         private void RefreshHandWeapon(int weapon)
@@ -383,7 +443,6 @@ namespace ShooterShop.Customers
                 return;
 
             _handWeapon = Instantiate(config.DisplayModel, _body.Appearance.RightHand, false);
-            _handWeapon.transform.SetLocalPositionAndRotation(_appearances.HandWeaponPosition, _appearances.HandWeaponRotation);
         }
 
         private void BuildAppearance()

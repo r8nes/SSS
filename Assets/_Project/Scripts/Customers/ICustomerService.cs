@@ -6,5 +6,6 @@ namespace ShooterShop.Customers
         bool TrySell(Customer customer);
         void Dismiss(Customer customer);
         void CloseShop();
+        void Evacuate(float duration);
     }
 }

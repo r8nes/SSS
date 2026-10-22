@@ -25,6 +25,15 @@ namespace ShooterShop.Rentals
             }
         }
 
+        public bool IsHoldingWeapon
+        {
+            get
+            {
+                var inventory = Inventory;
+                return inventory != null && inventory.currentItemIndex >= 0 && inventory.currentItem != null;
+            }
+        }
+
         private IInventory Inventory
         {
             get

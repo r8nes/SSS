@@ -66,9 +66,9 @@ namespace ShooterShop.Network
             _stock.TryGetValue(_catalog.IndexOf(product), out var amount) ? amount : 0;
 
         public int GetPurchaseCost(ProductConfig product, int amount) =>
-            UnityEngine.Mathf.RoundToInt(product.BuyPrice * amount
+            ShooterShop.Economy.Money.Round(product.BuyPrice
                 * (1f + GetPriceChangePercent(product) / 100f)
-                * (1f - (_day?.CurrentEvent?.PurchaseDiscount ?? 0f)));
+                * (1f - (_day?.CurrentEvent?.PurchaseDiscount ?? 0f))) * amount;
 
         public int GetPriceChangePercent(ProductConfig product) =>
             _priceChanges.TryGetValue(_catalog.IndexOf(product), out var percent) ? percent : 0;

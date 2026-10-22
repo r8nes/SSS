@@ -24,6 +24,7 @@ namespace ShooterShop.Store
             _inputLock = inputLock;
         }
 
+        public string WeaponBlocksCarryPrompt => _config.WeaponBlocksCarryPrompt;
         public DeliveryBox LocalCarriedBox => FindCarried(LocalPlayerNetId);
         public bool IsLocalPlayerCarrying => LocalCarriedBox != null;
 
@@ -39,6 +40,15 @@ namespace ShooterShop.Store
         {
             foreach (var box in _boxes)
                 if (box != null && !box.IsCarried && Vector3.Distance(box.transform.position, position) <= radius)
+                    return true;
+
+            return false;
+        }
+
+        public bool IsRestingNear(Vector3 position, float radius)
+        {
+            foreach (var box in _boxes)
+                if (box != null && !box.IsCarried && Vector3.Distance(box.RestPosition, position) <= radius)
                     return true;
 
             return false;

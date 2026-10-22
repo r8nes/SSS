@@ -74,4 +74,14 @@ MonoBehaviour:
       isActive: 1
       foldout: 1
       selectedFunction: 10
+    - name: SoundVolume
+      functionName: SetSoundVolume
+      isActive: 1
+      foldout: 0
+      selectedFunction: 11
+    - name: MusicVolume
+      functionName: SetMusicVolume
+      isActive: 1
+      foldout: 0
+      selectedFunction: 12
   currentSelectedSection: 2

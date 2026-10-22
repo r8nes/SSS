@@ -13,7 +13,7 @@ namespace Akila.FPSFrameworkPro
     /// Handles health syncing, remote damage, and death behavior across clients and server.
     /// </summary>
 #if MIRROR
-    public class NetworkDamageable : NetworkBehaviour
+    public class NetworkDamageable : NetworkBehaviour, IServerDamageable
 #else
     public class NetworkDamageable : MonoBehaviour
 #endif
@@ -418,6 +418,17 @@ namespace Akila.FPSFrameworkPro
         /// </summary>
         /// <param name="damage">Amount of damage to apply.</param>
         /// <param name="sourcePlayer">Entity that dealt the damage.</param>
+        public bool IsAlive => health > 0f;
+
+        [Server]
+        public void ServerDamage(float amount)
+        {
+            if (damageable)
+                damageable.autoHealDelayTime = damageable.autoHealDelay;
+
+            health = Mathf.Max(0f, health - amount);
+        }
+
         [Command(requiresAuthority = false)]
         private void CmdDamage(float damage)
         {

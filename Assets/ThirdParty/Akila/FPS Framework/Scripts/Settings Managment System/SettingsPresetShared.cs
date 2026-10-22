@@ -77,7 +77,7 @@ namespace Akila.FPSFramework
 
         public void SetGlobalVolume(float value)
         {
-            FPSFrameworkSettings.globalAudioVolume = value / 100;
+            AudioListener.volume = Mathf.Clamp01(value / 100);
         }
 
         public override void OnApplicationQuit()
@@ -85,6 +85,16 @@ namespace Akila.FPSFramework
             FPSFrameworkCore.SensitivityMultiplier = 1;
             FPSFrameworkCore.XSensitivityMultiplier = 1;
             FPSFrameworkCore.YSensitivityMultiplier = 1;
+        }
+    
+        public void SetSoundVolume(float value)
+        {
+            FPSFrameworkSettings.globalAudioVolume = Mathf.Clamp01(value / 100);
+        }
+
+        public void SetMusicVolume(float value)
+        {
+            FPSFrameworkSettings.musicVolume = Mathf.Clamp01(value / 100);
         }
     }
 }

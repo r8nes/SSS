@@ -120,6 +120,11 @@ MonoBehaviour:
   - {fileID: 4027015825104612739, guid: 5a82e53d054022b4794681e9cf725181, type: 3}
   - {fileID: 8439450588695626309, guid: 8da48c02319ef964c98748b5c7da0e8a, type: 3}
   _modelOffset: {x: 0, y: -1, z: 0}
-  _handWeapon: {fileID: 4309385554998612629, guid: 6457693672c6b714181646757bcfdabb, type: 3}
-  _handWeaponPosition: {x: 0.08, y: 0.02, z: 0.03}
-  _handWeaponRotation: {x: 0, y: 90, z: 90}
+  _walkClipSpeed: 1.4
+  _weaponLayer: Weapon
+  _pistolIdleState: Pistol
+  _pistolFireState: 
+  _rifleIdleState: Rifle
+  _rifleFireState: Rifle Fire
+  _pistolGripOffset: {x: 0, y: 0.02, z: 0.08}
+  _rifleGripOffset: {x: 0, y: 0.03, z: 0.18}

@@ -65,6 +65,27 @@ namespace ShooterShop.Store
         public DeliveryBox BoxPrefab => _boxPrefab;
         public Customer CourierPrefab => _courierPrefab;
         public float CourierSpeed => _courierSpeed;
+        [BoxGroup("Carry"), Required]
+        [SerializeField] private string _weaponBlocksCarryPrompt = "Put your weapon away to carry boxes";
+
+        [BoxGroup("Storage"), Required]
+        [SerializeField] private string _storagePrompt = "Store {0}";
+
+        [BoxGroup("Storage"), Required]
+        [SerializeField] private string _storageFullPrompt = "Storage rack is full";
+
+        [BoxGroup("Storage"), Required]
+        [InfoBox("{0} is the upgrade name")]
+        [SerializeField] private string _storageLockedPrompt = "Needs upgrade: {0}";
+
+        [BoxGroup("Storage"), MinValue(0.05f), SuffixLabel("m")]
+        [SerializeField] private float _storageSlotRadius = 0.25f;
+
+        public string StoragePrompt => _storagePrompt;
+        public string StorageFullPrompt => _storageFullPrompt;
+        public string StorageLockedPrompt => _storageLockedPrompt;
+        public float StorageSlotRadius => _storageSlotRadius;
+        public string WeaponBlocksCarryPrompt => _weaponBlocksCarryPrompt;
         public Key DropKey => _dropKey;
         public Key PlaceKey => _placeKey;
         public float HoldRepeatDelay => _holdRepeatDelay;

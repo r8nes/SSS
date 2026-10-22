@@ -8,6 +8,7 @@ namespace ShooterShop.Days
         int Day { get; }
         DayPhase Phase { get; }
         bool IsOpen { get; }
+        bool IsAcceptingCustomers { get; }
         double TimeLeft { get; }
         int Income { get; }
         int Expenses { get; }

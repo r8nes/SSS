@@ -12,6 +12,11 @@ namespace ShooterShop.Store
         [Required, SceneObjectsOnly, ListDrawerSettings(ShowFoldout = false)]
         [SerializeField] private List<ProductStand> _stands = new();
 
+        [SceneObjectsOnly, ListDrawerSettings(ShowFoldout = false)]
+        [SerializeField] private List<StorageRack> _storageRacks = new();
+
+        public IReadOnlyList<StorageRack> StorageRacks => _storageRacks;
+        public int IndexOf(StorageRack rack) => _storageRacks.IndexOf(rack);
         public Transform DeliveryPoint => _deliveryPoint;
         public IReadOnlyList<ProductStand> Stands => _stands;
 

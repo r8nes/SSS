@@ -1,3 +1,4 @@
+using ShooterShop.Rentals;
 using UnityEngine;
 
 namespace ShooterShop.Customers
@@ -9,16 +10,20 @@ namespace ShooterShop.Customers
         private static readonly int IsGrounded = Animator.StringToHash("IsGrounded");
 
         private readonly Transform _root;
+        private readonly CustomerAppearanceCatalog _catalog;
+        private readonly Transform _rightHand;
         private Vector3 _lastPosition;
         private Vector2 _move;
 
-        private AppearanceBody(Transform root, CustomerAppearance appearance)
+        private AppearanceBody(Transform root, CustomerAppearance appearance, CustomerAppearanceCatalog catalog)
         {
             _root = root;
+            _catalog = catalog;
             _lastPosition = root.position;
             Appearance = appearance;
             Appearance.Ragdoll.Freeze();
             Animator.SetBool(IsGrounded, true);
+            _rightHand = Animator.GetBoneTransform(HumanBodyBones.RightHand);
 
             for (var layer = 1; layer < Animator.layerCount; layer++)
                 Animator.SetLayerWeight(layer, 0f);
@@ -28,13 +33,6 @@ namespace ShooterShop.Customers
         public Animator Animator => Appearance.Animator;
         public CustomerRagdoll Ragdoll => Appearance.Ragdoll;
 
-        private CustomerAppearanceCatalog _catalog;
-        private HumanPoseHandler _poseHandler;
-        private HumanPose _pose;
-        private int[] _aimMuscles;
-        private int _recoilMuscle = -1;
-        private float _recoil;
-
         public static AppearanceBody Create(CustomerAppearanceCatalog catalog, int index, Transform root)
         {
             if (!catalog.TryGet(index, out var prefab))
@@ -42,7 +40,7 @@ namespace ShooterShop.Customers
 
             var appearance = Object.Instantiate(prefab, root, false);
             appearance.transform.SetLocalPositionAndRotation(catalog.ModelOffset, Quaternion.identity);
-            return new AppearanceBody(root, appearance) { _catalog = catalog };
+            return new AppearanceBody(root, appearance, catalog);
         }
 
         public void TickLocomotion(float deltaTime, float walkBlendValue, float smoothing)
@@ -58,49 +56,41 @@ namespace ShooterShop.Customers
             Animator.SetFloat(MoveX, _move.x);
             Animator.SetFloat(MoveY, _move.y);
         }
-            public void Kick() => _recoil = 1f;
 
-        public void ApplyAimPose(float deltaTime)
+        public void PlayWeaponPose(RentalWeaponPose pose, bool isActive)
         {
-            EnsurePoseHandler();
+            var layer = Animator.GetLayerIndex(_catalog.WeaponLayer);
 
-            var hips = Animator.GetBoneTransform(HumanBodyBones.Hips);
-            var hipsPosition = hips.position;
-            var hipsRotation = hips.rotation;
-
-            _poseHandler.GetHumanPose(ref _pose);
-
-            var aimPose = _catalog.AimPose;
-
-            for (var i = 0; i < aimPose.Count; i++)
-                if (_aimMuscles[i] >= 0)
-                    _pose.muscles[_aimMuscles[i]] = aimPose[i].Value;
-
-            if (_recoilMuscle >= 0)
-                _pose.muscles[_recoilMuscle] += _recoil * _catalog.RecoilStrength;
-
-            _recoil = Mathf.MoveTowards(_recoil, 0f, deltaTime * _catalog.RecoilRecovery);
-            _poseHandler.SetHumanPose(ref _pose);
-            hips.SetPositionAndRotation(hipsPosition, hipsRotation);
-        }
-
-        public void Dispose() => _poseHandler?.Dispose();
-
-        private void EnsurePoseHandler()
-        {
-            if (_poseHandler != null)
+            if (layer < 0)
                 return;
 
-            _poseHandler = new HumanPoseHandler(Animator.avatar, Animator.transform);
-            _pose = new HumanPose();
+            Animator.SetLayerWeight(layer, isActive ? 1f : 0f);
 
-            var aimPose = _catalog.AimPose;
-            _aimMuscles = new int[aimPose.Count];
+            if (isActive)
+                Animator.CrossFadeInFixedTime(_catalog.IdleStateOf(pose), 0.15f, layer);
+        }
 
-            for (var i = 0; i < aimPose.Count; i++)
-                _aimMuscles[i] = System.Array.IndexOf(HumanTrait.MuscleName, aimPose[i].Muscle);
+        public void PlayFire(RentalWeaponPose pose)
+        {
+            var layer = Animator.GetLayerIndex(_catalog.WeaponLayer);
+            var state = _catalog.FireStateOf(pose);
 
-            _recoilMuscle = System.Array.IndexOf(HumanTrait.MuscleName, "Right Arm Down-Up");
+            if (layer >= 0 && !string.IsNullOrEmpty(state))
+                Animator.CrossFadeInFixedTime(state, 0.05f, layer, 0f);
+        }
+
+        public void AlignWeapon(Transform weapon, RentalWeaponConfig config, Vector3? aimPoint)
+        {
+            if (weapon == null || _rightHand == null)
+                return;
+
+            var direction = aimPoint.HasValue ? aimPoint.Value - _rightHand.position : _root.forward;
+
+            if (direction.sqrMagnitude < 0.0001f)
+                direction = _root.forward;
+
+            var aim = Quaternion.LookRotation(direction.normalized, _root.up);
+            weapon.SetPositionAndRotation(_rightHand.position + aim * config.HandOffset, aim * config.HandRotation);
         }
     }
 }

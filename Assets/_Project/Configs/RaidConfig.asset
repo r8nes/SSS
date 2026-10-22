@@ -1,0 +1,52 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d1dabb6f9e29f8c4f98b8f019b9b86c2, type: 3}
+  m_Name: RaidConfig
+  m_EditorClassIdentifier: ShooterShop.Runtime::ShooterShop.Raids.RaidConfig
+  _prefab: {fileID: 6326683257503061097, guid: 898b6052c3112be47b9592caaed23536, type: 3}
+  _thieves: 2
+  _gunmen: 3
+  _appearances:
+  - {fileID: 1890741434014170080, guid: d35b370c95ab5704990e787b88a1cd80, type: 3}
+  - {fileID: 3740657180884644299, guid: b8010554cfcfcf342858e7591098848c, type: 3}
+  - {fileID: 7713211359454184497, guid: d31a1c581d312fa409f768c48c878cd0, type: 3}
+  - {fileID: 8501638189615929411, guid: 6965b9035cb19294789494b05bac4077, type: 3}
+  - {fileID: 1557252492127007999, guid: 48c4c2b94a6110f4398da08c20b1df15, type: 3}
+  - {fileID: 2868978346237938953, guid: 22a04e699a0efe64ba6ed572f9be2ac7, type: 3}
+  _weapons:
+  - {fileID: 11400000, guid: 384c86c0c83a9ae49a655249ba4ab69e, type: 2}
+  - {fileID: 11400000, guid: bb788d245b497e84f96d02b3e9f27833, type: 2}
+  - {fileID: 11400000, guid: 3910ca7b2f3647e4ca57e553af15b5dc, type: 2}
+  _gangName: The Italian mafia
+  _startDelay: {x: 25, y: 50}
+  _customerPause: 60
+  _runSpeed: 3.2
+  _walkBlendValue: 5
+  _animationSmoothing: 10
+  _carryCapacity: 12
+  _stealDuration: 2.5
+  _attackRange: 18
+  _fireInterval: {x: 0.6, y: 1.6}
+  _hitChance: 0.2
+  _damage: 9
+  _aimHeight: 1.3
+  _eyeHeight: 0.6
+  _thievesShoot: 1
+  _sightMask:
+    serializedVersion: 2
+    m_Bits: 1
+  _hitsToKill: 3
+  _bounty: 150
+  _deathImpulse: 120
+  _corpseSinkDelay: 4
+  _corpseSinkDuration: 6
+  _corpseSinkDepth: 1.2
